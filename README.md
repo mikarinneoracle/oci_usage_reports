@@ -2,13 +2,24 @@
 
 This function copies OCI Cost/Usage reports from a **reporting bucket** into another Object Storage bucket.
 
+**Note**: The function code is located in the `copyusagereport/` subdirectory. Make sure to navigate to that directory before deploying or building.
+
+### Prebuilt Function Images
+
+Prebuilt Docker images are available for quick deployment:
+
+- **x86_64**: `mikarinneoracle/oci-copy-usage-report:x86`
+- **ARM64**: `mikarinneoracle/oci-copy-usage-report:arm`
+
+You can use these images directly without building from source. See deployment instructions below.
+
 ### Getting Started
 
 #### Clone the Repository
 
 ```bash
 git clone https://github.com/mikarinneoracle/oci_usage_reports.git
-cd oci_usage_reports
+cd oci_usage_reports/copyusagereport
 ```
 
 #### Configure Fn CLI Context
@@ -45,8 +56,24 @@ fn use context <context-name>
 
 2. **Deploy the function**:
 
+   **Option A: Deploy from source (builds from func.yaml)**:
+   
+   Make sure you're in the `copyusagereport` directory:
    ```bash
+   cd copyusagereport
    fn deploy --app <app-name>
+   ```
+
+   **Option B: Deploy using prebuilt image**:
+   
+   For x86_64:
+   ```bash
+   fn deploy --app <app-name> --image mikarinneoracle/oci-copy-usage-report:x86
+   ```
+   
+   For ARM64:
+   ```bash
+   fn deploy --app <app-name> --image mikarinneoracle/oci-copy-usage-report:arm
    ```
 
    Replace `<app-name>` with your Oracle Functions application name. If the application doesn't exist, create it first:
@@ -154,13 +181,16 @@ To build and run this function locally using `Dockerfile.oci_cli`, you need to p
 
 Use the provided script to automate the build and deployment:
 
+Make sure you're in the `copyusagereport` directory:
 ```bash
+cd copyusagereport
 ./build-local.sh -a <app-name>
 ```
 
 Or with a Docker registry:
 
 ```bash
+cd copyusagereport
 ./build-local.sh -a <app-name> -r <your-registry>
 ```
 
@@ -170,9 +200,10 @@ Use `./build-local.sh --help` for all options.
 
 Alternatively, you can follow these steps manually:
 
-1. **Copy OCI credentials to the project directory**:
+1. **Navigate to the function directory and copy OCI credentials**:
 
    ```bash
+   cd copyusagereport
    mkdir -p .oci
    cp ~/.oci/config .oci/
    cp ~/.oci/oci_api_key.pem .oci/
@@ -188,15 +219,12 @@ Alternatively, you can follow these steps manually:
 
 3. **Deploy to local fn server**:
 
+   From the `copyusagereport` directory:
    ```bash
-   fn deploy --local --app <app-name> --build-arg FN_REGISTRY=<your-registry> --dockerfile Dockerfile.oci_cli
+   fn deploy --local --app <app-name> --build-arg FN_REGISTRY=<your-registry>
    ```
 
-   Or if you want to use the image you built:
-
-   ```bash
-   fn deploy --local --app <app-name> --image copyusagereport:local
-   ```
+   Note: The `fn deploy` command will automatically use the `Dockerfile` in the current directory (which is created from `Dockerfile.oci_cli` by the build script).
 
 4. **Set the configuration**:
 
