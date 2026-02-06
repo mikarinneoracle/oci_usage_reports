@@ -23,6 +23,40 @@ The `xtenancycheck` function validates uploaded files in Object Storage by check
 
 **Workflow**: When `copyusagereport` uploads files to a cross-tenancy bucket with a secret prefix, `xtenancycheck` validates those files and removes any unauthorized uploads that don't match the expected pattern.
 
+## Authentication and Deployment
+
+### Resource Principal Authentication (Default)
+
+Both functions run as **Resource Principal** by default when deployed to Oracle Functions. This authentication method requires:
+
+1. **Dynamic Group**: Create a dynamic group that includes your function
+2. **IAM Policies**: Configure policies to grant the dynamic group necessary permissions:
+   - Object Storage access (read/write/delete objects)
+   - Namespace access (read objectstorage-namespace)
+
+**Example Dynamic Group Rule**:
+```
+resource.type = 'fnfunc'
+resource.compartment.id = '<compartment-ocid>'
+```
+
+**Example IAM Policies**:
+```hcl
+Allow dynamic-group <dynamic-group-name> to manage objects in compartment <compartment-name>
+Allow dynamic-group <dynamic-group-name> to read objectstorage-namespace in compartment <compartment-name>
+```
+
+### Local Build to Private OCIR
+
+Both functions can be built locally using the `build-local.sh` script in each function's directory. This method:
+
+- **Requires**: A **private** Oracle Cloud Infrastructure Registry (OCIR) repository
+- **⚠️ IMPORTANT**: Using a **private OCIR repository is mandatory** for security
+- **Process**: Builds the function image locally and pushes it to your private OCIR registry
+- **Use Case**: Custom builds, testing, or when you need to modify the function code
+
+Each function directory (`copyusagereport/` and `xtenancycheck/`) contains its own `build-local.sh` script. See the function-specific sections below for detailed instructions.
+
 ---
 
 ## copyusagereport Oracle Function
