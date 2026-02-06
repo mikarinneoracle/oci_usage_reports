@@ -1,3 +1,30 @@
+# OCI Usage Reports Management Functions
+
+This repository contains Oracle Functions for managing OCI Cost/Usage reports, including copying reports within a tenancy or across tenancies, and validating cross-tenancy uploads.
+
+## Overview
+
+### copyusagereport Function
+
+The `copyusagereport` function copies OCI Cost/Usage reports from a **reporting bucket** into another Object Storage bucket. It supports:
+
+- **Same-tenancy copying**: Copy reports to buckets within the same tenancy
+- **Cross-tenancy copying**: Copy reports to buckets in another tenancy using a Pre-Authenticated Request (PAR) and secret prefix
+
+When configured with both `secret` and `x-tenancy_par` parameters, the function automatically prefixes filenames with a base64-encoded secret (format: `<base64_secret>_<original_filename>`) to enable secure cross-tenancy validation.
+
+### xtenancycheck Function
+
+The `xtenancycheck` function validates uploaded files in Object Storage by checking if they have the correct secret prefix (base64-encoded secret followed by underscore). This function is designed to work in conjunction with `copyusagereport` for cross-tenancy scenarios:
+
+- **Automatic validation**: Triggered by Object Storage bucket write events
+- **Security enforcement**: Files without the correct secret prefix are automatically deleted
+- **Security logging**: Unauthorized upload attempts are logged as security alerts
+
+**Workflow**: When `copyusagereport` uploads files to a cross-tenancy bucket with a secret prefix, `xtenancycheck` validates those files and removes any unauthorized uploads that don't match the expected pattern.
+
+---
+
 ## copyusagereport Oracle Function
 
 This function copies OCI Cost/Usage reports from a **reporting bucket** into another Object Storage bucket.
