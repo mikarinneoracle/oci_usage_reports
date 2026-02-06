@@ -11,7 +11,7 @@ Prebuilt Docker images are available for quick deployment:
 - **x86_64**: `mikarinneoracle/oci-copy-usage-report:x86`
 - **ARM64**: `mikarinneoracle/oci-copy-usage-report:arm`
 
-You can use these images directly without building from source. See deployment instructions below.
+**Note**: These images are hosted on Docker Hub and must be pulled, tagged for OCIR, and pushed to your Oracle Cloud Infrastructure Registry (OCIR) before they can be used with Oracle Functions. See deployment instructions below.
 
 ### Getting Started
 
@@ -66,17 +66,68 @@ fn use context <context-name>
 
    **Option B: Deploy using prebuilt image**:
    
-   For x86_64:
-   ```bash
-   fn deploy --app <app-name> --image mikarinneoracle/oci-copy-usage-report:x86
-   ```
+   **Prerequisites**: You need an Oracle Cloud Infrastructure Registry (OCIR) in your tenancy. If you don't have one, create it:
+   1. Go to OCI Console → Developer Services → Container Registry
+   2. Create a repository (or use an existing one)
+   3. Note your registry URL (format: `<region-key>.ocir.io/<tenancy-namespace>/<repo-name>`)
    
-   For ARM64:
-   ```bash
-   fn deploy --app <app-name> --image mikarinneoracle/oci-copy-usage-report:arm
-   ```
-
-   Replace `<app-name>` with your Oracle Functions application name. If the application doesn't exist, create it first:
+   **Steps to deploy using prebuilt image**:
+   
+   1. **Pull the image from Docker Hub**:
+      
+      For x86_64:
+      ```bash
+      docker pull mikarinneoracle/oci-copy-usage-report:x86
+      ```
+      
+      For ARM64:
+      ```bash
+      docker pull mikarinneoracle/oci-copy-usage-report:arm
+      ```
+   
+   2. **Authenticate Docker to OCIR**:
+      ```bash
+      docker login <region-key>.ocir.io
+      ```
+      Use your OCI username (format: `<tenancy-namespace>/<username>`) and an Auth Token as password.
+   
+   3. **Tag the image for OCIR**:
+      
+      For x86_64:
+      ```bash
+      docker tag mikarinneoracle/oci-copy-usage-report:x86 <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:x86
+      ```
+      
+      For ARM64:
+      ```bash
+      docker tag mikarinneoracle/oci-copy-usage-report:arm <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:arm
+      ```
+   
+   4. **Push the image to OCIR**:
+      
+      For x86_64:
+      ```bash
+      docker push <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:x86
+      ```
+      
+      For ARM64:
+      ```bash
+      docker push <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:arm
+      ```
+   
+   5. **Deploy the function using the OCIR image**:
+      
+      For x86_64:
+      ```bash
+      fn deploy --app <app-name> --image <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:x86
+      ```
+      
+      For ARM64:
+      ```bash
+      fn deploy --app <app-name> --image <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:arm
+      ```
+   
+   Replace `<app-name>`, `<region-key>`, `<tenancy-namespace>`, and `<repo-name>` with your values. If the application doesn't exist, create it first:
 
    ```bash
    fn create app <app-name>
@@ -266,7 +317,7 @@ Prebuilt Docker images are available for quick deployment:
 - **x86_64**: `mikarinneoracle/oci-xtenancy-check:x86`
 - **ARM64**: `mikarinneoracle/oci-xtenancy-check:arm`
 
-You can use these images directly without building from source. See deployment instructions below.
+**Note**: These images are hosted on Docker Hub and must be pulled, tagged for OCIR, and pushed to your Oracle Cloud Infrastructure Registry (OCIR) before they can be used with Oracle Functions. See deployment instructions below.
 
 ### Required Configuration
 
@@ -298,17 +349,68 @@ fn config function <app-name> xtenancycheck secret "<your_secret_here>"
    
    **Option B: Deploy using prebuilt image**:
    
-   For x86_64:
-   ```bash
-   fn deploy --app <app-name> --image mikarinneoracle/oci-xtenancy-check:x86
-   ```
+   **Prerequisites**: You need an Oracle Cloud Infrastructure Registry (OCIR) in your tenancy. If you don't have one, create it:
+   1. Go to OCI Console → Developer Services → Container Registry
+   2. Create a repository (or use an existing one)
+   3. Note your registry URL (format: `<region-key>.ocir.io/<tenancy-namespace>/<repo-name>`)
    
-   For ARM64:
-   ```bash
-   fn deploy --app <app-name> --image mikarinneoracle/oci-xtenancy-check:arm
-   ```
+   **Steps to deploy using prebuilt image**:
    
-   Replace `<app-name>` with your Oracle Functions application name. If the application doesn't exist, create it first:
+   1. **Pull the image from Docker Hub**:
+      
+      For x86_64:
+      ```bash
+      docker pull mikarinneoracle/oci-xtenancy-check:x86
+      ```
+      
+      For ARM64:
+      ```bash
+      docker pull mikarinneoracle/oci-xtenancy-check:arm
+      ```
+   
+   2. **Authenticate Docker to OCIR**:
+      ```bash
+      docker login <region-key>.ocir.io
+      ```
+      Use your OCI username (format: `<tenancy-namespace>/<username>`) and an Auth Token as password.
+   
+   3. **Tag the image for OCIR**:
+      
+      For x86_64:
+      ```bash
+      docker tag mikarinneoracle/oci-xtenancy-check:x86 <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:x86
+      ```
+      
+      For ARM64:
+      ```bash
+      docker tag mikarinneoracle/oci-xtenancy-check:arm <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:arm
+      ```
+   
+   4. **Push the image to OCIR**:
+      
+      For x86_64:
+      ```bash
+      docker push <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:x86
+      ```
+      
+      For ARM64:
+      ```bash
+      docker push <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:arm
+      ```
+   
+   5. **Deploy the function using the OCIR image**:
+      
+      For x86_64:
+      ```bash
+      fn deploy --app <app-name> --image <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:x86
+      ```
+      
+      For ARM64:
+      ```bash
+      fn deploy --app <app-name> --image <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:arm
+      ```
+   
+   Replace `<app-name>`, `<region-key>`, `<tenancy-namespace>`, and `<repo-name>` with your values. If the application doesn't exist, create it first:
    ```bash
    fn create app <app-name>
    ```
