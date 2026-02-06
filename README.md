@@ -2,6 +2,39 @@
 
 This function copies OCI Cost/Usage reports from a **reporting bucket** into another Object Storage bucket.
 
+### Getting Started
+
+#### Clone the Repository
+
+```bash
+git clone https://github.com/mikarinneoracle/oci_usage_reports.git
+cd oci_usage_reports
+```
+
+#### Deploy with Fn CLI
+
+1. **Ensure you have Fn CLI installed** and are authenticated to your OCI environment.
+
+2. **Deploy the function**:
+
+   ```bash
+   fn deploy --app <app-name>
+   ```
+
+   Replace `<app-name>` with your Oracle Functions application name. If the application doesn't exist, create it first:
+
+   ```bash
+   fn create app <app-name>
+   ```
+
+3. **Set the required configuration** (see below).
+
+4. **Invoke the function**:
+
+   ```bash
+   fn invoke <app-name> copyusagereport
+   ```
+
 ### Required configuration
 
 The function expects two configuration keys:
