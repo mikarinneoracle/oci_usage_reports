@@ -1,6 +1,9 @@
 # OCI CLI credentials (contains sensitive API keys)
 .oci/
 
+# Dockerfile (generated/auto-generated)
+Dockerfile
+
 # Python
 __pycache__/
 *.py[cod]
