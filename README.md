@@ -259,6 +259,15 @@ This function is designed to be triggered by Object Storage bucket write events.
 - Deletes files that don't match the expected pattern
 - Logs security alerts for unauthorized uploads
 
+### Prebuilt Function Images
+
+Prebuilt Docker images are available for quick deployment:
+
+- **x86_64**: `mikarinneoracle/oci-xtenancy-check:x86`
+- **ARM64**: `mikarinneoracle/oci-xtenancy-check:arm`
+
+You can use these images directly without building from source. See deployment instructions below.
+
 ### Required Configuration
 
 The function requires one configuration key:
@@ -270,6 +279,41 @@ fn config function <app-name> xtenancycheck secret "<your_secret_here>"
 ```
 
 **Note**: This secret must match the secret used in `copyusagereport` function when uploading files with the `x-tenancy_par` option.
+
+### Deployment
+
+#### Deploy with Fn CLI
+
+1. **Navigate to the function directory**:
+   ```bash
+   cd xtenancycheck
+   ```
+
+2. **Deploy the function**:
+   
+   **Option A: Deploy from source (builds from func.yaml)**:
+   ```bash
+   fn deploy --app <app-name>
+   ```
+   
+   **Option B: Deploy using prebuilt image**:
+   
+   For x86_64:
+   ```bash
+   fn deploy --app <app-name> --image mikarinneoracle/oci-xtenancy-check:x86
+   ```
+   
+   For ARM64:
+   ```bash
+   fn deploy --app <app-name> --image mikarinneoracle/oci-xtenancy-check:arm
+   ```
+   
+   Replace `<app-name>` with your Oracle Functions application name. If the application doesn't exist, create it first:
+   ```bash
+   fn create app <app-name>
+   ```
+
+3. **Set the required configuration** (see Required Configuration above).
 
 ### Configuring OCI Object Storage Events
 
