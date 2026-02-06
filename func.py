@@ -2,6 +2,8 @@ import io
 import json
 import logging
 import os
+import base64
+import requests
 import oci
 from datetime import datetime, timedelta
 from fdk import response
@@ -13,15 +15,57 @@ def handler(ctx, data: io.BytesIO = None):
     try:
         cfg = dict(ctx.Config()) if ctx is not None else {}
         reporting_namespace = 'bling'
+        
+        # Get tenancy_ocid from config or auto-retrieve
         tenancy_ocid = cfg.get('tenancy_ocid')
-        if not tenancy_ocid:
-            raise ValueError("Missing required config key 'tenancy_ocid'. Set it with 'fn config function <app> copyusagereport tenancy_ocid <tenancy_ocid>'.")
+        
         bucket_name = cfg.get('bucket_name')
         if not bucket_name:
             raise ValueError("Missing required config key 'bucket_name'. Set it with 'fn config function <app> copyusagereport bucket_name <bucket_name>'.")
         
+        # Optional parameters for cross-tenancy upload
+        secret = cfg.get('secret')
+        x_tenancy_par = cfg.get('x-tenancy_par')
+        
+        # Check if /config exists (OCI CLI config for local testing)
+        if os.path.exists('/config'):
+            logger.info("Found /config file, using OCI CLI authentication")
+            config = oci.config.from_file('/config')
+            object_storage = oci.object_storage.ObjectStorageClient(config)
+            # Auto-retrieve tenancy_ocid from config if not provided
+            if not tenancy_ocid:
+                tenancy_ocid = config.get('tenancy')
+                logger.info(f"Auto-retrieved tenancy_ocid from CLI config: {tenancy_ocid}")
+        else:
+            logger.info("No /config file found, using Resource Principal authentication")
+            Signer = oci.auth.signers.get_resource_principals_signer()
+            object_storage = oci.object_storage.ObjectStorageClient(config={}, signer=Signer)
+            # Auto-retrieve tenancy_ocid from signer if not provided
+            if not tenancy_ocid:
+                try:
+                    # Get tenancy OCID from the signer's principal
+                    tenancy_ocid = Signer.tenancy_id
+                    logger.info(f"Auto-retrieved tenancy_ocid from Resource Principal: {tenancy_ocid}")
+                except Exception as ex:
+                    logger.warning(f"Could not auto-retrieve tenancy_ocid from Resource Principal: {str(ex)}")
+        
+        if not tenancy_ocid:
+            raise ValueError("Missing required config key 'tenancy_ocid'. Set it with 'fn config function <app> copyusagereport tenancy_ocid <tenancy_ocid>'.")
+        
         logger.info(f"Starting report copy process")
         logger.info(f"Configuration - tenancy_ocid: {tenancy_ocid}, bucket_name: {bucket_name}")
+        
+        # Check if cross-tenancy upload is requested
+        # NOTE: PAR (Pre-Authenticated Request) must be created at the bucket root with write privileges,
+        # without any prefix (directory). The PAR should allow writing objects to the bucket root.
+        use_cross_tenancy = x_tenancy_par is not None
+        use_secret_prefix = secret is not None and use_cross_tenancy
+        
+        if use_cross_tenancy:
+            logger.info(f"Cross-tenancy upload enabled with PAR: {x_tenancy_par[:50]}...")
+            logger.info("PAR must be created at bucket root with write privileges, without prefix")
+        if use_secret_prefix:
+            logger.info("Secret prefix will be added to filenames for cross-tenancy upload")
         
         yesterday = datetime.now() - timedelta(days=3)
         prefix_file = f"FOCUS Reports/{yesterday.year}/{yesterday.strftime('%m')}/{yesterday.strftime('%d')}"
@@ -30,16 +74,6 @@ def handler(ctx, data: io.BytesIO = None):
         logger.info(f"Source bucket OCID: {tenancy_ocid}")
         
         destination_path = '/tmp'
-        
-        # Check if /config exists (OCI CLI config for local testing)
-        if os.path.exists('/config'):
-            logger.info("Found /config file, using OCI CLI authentication")
-            config = oci.config.from_file('/config')
-            object_storage = oci.object_storage.ObjectStorageClient(config)
-        else:
-            logger.info("No /config file found, using Resource Principal authentication")
-            Signer = oci.auth.signers.get_resource_principals_signer()
-            object_storage = oci.object_storage.ObjectStorageClient(config={}, signer=Signer)
         
         # Get namespace using SDK
         namespace_response = object_storage.get_namespace()
@@ -89,21 +123,68 @@ def handler(ctx, data: io.BytesIO = None):
             logger.info(f"Downloaded {filename}, size: {o.size} bytes")
             
             with open(local_file_path, 'rb') as file_content:
-                object_name = f"{yesterday.year}_{yesterday.strftime('%m')}_{yesterday.strftime('%d')}_{filename}"
-                logger.info(f"Uploading to destination namespace '{namespace}', bucket '{bucket_name}', object '{object_name}'")
+                # Build object name
+                base_object_name = f"{yesterday.year}_{yesterday.strftime('%m')}_{yesterday.strftime('%d')}_{filename}"
                 
-                object_storage.put_object(
-                    namespace_name=namespace,
-                    bucket_name=bucket_name,
-                    object_name=object_name,
-                    put_object_body=file_content
-                )
+                # Add secret prefix if cross-tenancy upload with secret is enabled
+                if use_secret_prefix:
+                    secret_b64 = base64.b64encode(secret.encode('utf-8')).decode('utf-8')
+                    object_name = f"{secret_b64}_{base_object_name}"
+                    logger.info(f"Added secret prefix to filename: {object_name}")
+                else:
+                    object_name = base_object_name
                 
-                logger.info(f"Successfully uploaded: {object_name}")
+                # Upload using cross-tenancy PAR or standard method
+                if use_cross_tenancy:
+                    logger.info(f"Uploading via cross-tenancy PAR to object '{object_name}'")
+                    # Use PAR URL for cross-tenancy upload
+                    # NOTE: PAR must be created at bucket root with write privileges, without prefix (directory)
+                    # PAR URL format: https://objectstorage.<region>.oraclecloud.com/p/<par_id>/n/<namespace>/b/<bucket>/o/<object>
+                    file_content.seek(0)  # Reset file pointer
+                    file_data = file_content.read()
+                    
+                    # Handle both bucket-level PAR (ends with /o/) and object-level PAR
+                    # Bucket-level PAR allows writing multiple objects, object-level PAR is for a specific object
+                    par_url = x_tenancy_par.rstrip('/')
+                    
+                    # Check if PAR URL ends with /o/ or /o (bucket-level PAR) or ends with the object name (object-level PAR)
+                    if par_url.endswith('/o') or par_url.endswith('/o/'):
+                        # Bucket-level PAR - append object name
+                        upload_url = f"{par_url}/{object_name}"
+                    elif par_url.endswith('/' + object_name):
+                        # Object-level PAR - use as-is
+                        upload_url = par_url
+                    else:
+                        # Assume bucket-level PAR and append object name
+                        upload_url = f"{par_url}/{object_name}"
+                    
+                    logger.info(f"Uploading to PAR URL: {upload_url[:100]}...")
+                    logger.info(f"File size: {len(file_data)} bytes")
+                    
+                    # Upload via PAR using PUT request
+                    # PAR URLs don't require authentication headers - the URL itself is the authentication
+                    headers = {
+                        'Content-Type': 'application/octet-stream',
+                        'Content-Length': str(len(file_data))
+                    }
+                    par_response = requests.put(upload_url, data=file_data, headers=headers)
+                    par_response.raise_for_status()
+                    logger.info(f"Successfully uploaded via PAR: {object_name} (Status: {par_response.status_code})")
+                else:
+                    logger.info(f"Uploading to destination namespace '{namespace}', bucket '{bucket_name}', object '{object_name}'")
+                    object_storage.put_object(
+                        namespace_name=namespace,
+                        bucket_name=bucket_name,
+                        object_name=object_name,
+                        put_object_body=file_content
+                    )
+                    logger.info(f"Successfully uploaded: {object_name}")
+                
                 processed_files.append({
                     "source": o.name,
                     "destination": object_name,
-                    "size": o.size
+                    "size": o.size,
+                    "cross_tenancy": use_cross_tenancy
                 })
         
         result_message = f"Processed {len(processed_files)} file(s) successfully"
