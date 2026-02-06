@@ -248,3 +248,132 @@ Alternatively, you can follow these steps manually:
 
 For production, use the standard `func.yaml` deployment which uses Resource Principals authentication instead of embedded credentials.
 
+## xtenancycheck Function
+
+The `xtenancycheck` function validates uploaded files in Object Storage by checking if they have the correct secret prefix (base64-encoded secret followed by underscore). Files without the correct prefix are automatically deleted.
+
+### Function Overview
+
+This function is designed to be triggered by Object Storage bucket write events. It:
+- Validates filenames against a configured secret prefix
+- Deletes files that don't match the expected pattern
+- Logs security alerts for unauthorized uploads
+
+### Required Configuration
+
+The function requires one configuration key:
+- `secret` - Secret value that will be base64-encoded and used to validate file prefixes
+
+Set it with:
+```bash
+fn config function <app-name> xtenancycheck secret "<your_secret_here>"
+```
+
+**Note**: This secret must match the secret used in `copyusagereport` function when uploading files with the `x-tenancy_par` option.
+
+### Configuring OCI Object Storage Events
+
+To automatically trigger `xtenancycheck` when files are uploaded to a bucket, configure an Object Storage event:
+
+#### Prerequisites
+
+1. Deploy the `xtenancycheck` function (see deployment instructions above)
+2. Ensure the function has proper IAM policies to delete objects from the target bucket
+
+#### Steps to Configure Event Rule
+
+1. **Navigate to Events Service**:
+   - Go to OCI Console → Developer Services → Events
+   - Select your compartment
+
+2. **Create an Event Rule**:
+   - Click "Create Rule"
+   - **Rule Name**: e.g., `xtenancycheck-bucket-events`
+   - **Description**: "Trigger xtenancycheck function on bucket writes"
+
+3. **Configure Event Conditions**:
+   - **Event Type**: Select `Object Storage`
+   - **Service Name**: `Object Storage`
+   - **Event Type**: `Object - Create`
+   - **Attribute**: Leave default or filter as needed
+
+4. **Select Compartment and Bucket**:
+   - **Compartment**: Select the compartment containing your target bucket
+   - **Bucket Name**: Select the specific bucket where files will be uploaded
+   - **Note**: You can create multiple rules for different buckets if needed
+
+5. **Configure Action**:
+   - **Action Type**: `Functions`
+   - **Function Compartment**: Select compartment where your function is deployed
+   - **Function Application**: Select your Functions application
+   - **Function**: Select `xtenancycheck`
+   - **Function Payload**: Leave empty (event data is automatically passed)
+
+6. **Enable the Rule**:
+   - Ensure "Enabled" is checked
+   - Click "Create Rule"
+
+#### Verification
+
+After creating the event rule:
+1. Upload a test file to the bucket (with correct secret prefix)
+2. Upload a test file without the secret prefix
+3. Check function logs to verify:
+   - Valid files are allowed
+   - Invalid files are deleted
+
+#### Example Event Rule Configuration
+
+```
+Rule Name: xtenancycheck-validation
+Event Type: Object Storage - Object - Create
+Compartment: <your-compartment>
+Bucket: <your-bucket-name>
+Action: Functions
+Function: xtenancycheck
+```
+
+#### IAM Policies Required
+
+Ensure the function's dynamic group has these policies:
+
+```hcl
+Allow dynamic-group <function-dynamic-group> to manage objects in compartment <compartment-name> where target.bucket.name='<bucket-name>'
+Allow dynamic-group <function-dynamic-group> to read objectstorage-namespace in compartment <compartment-name>
+```
+
+### Testing the Function
+
+You can test the function manually:
+
+```bash
+# Test with valid filename (has secret prefix)
+fn invoke <app-name> xtenancycheck --content '{
+  "data": {
+    "resourceName": "<base64_secret>_testfile.csv.gz",
+    "additionalDetails": {
+      "namespace": "<namespace>",
+      "bucketName": "<bucket-name>"
+    }
+  }
+}'
+
+# Test with invalid filename (no secret prefix)
+fn invoke <app-name> xtenancycheck --content '{
+  "data": {
+    "resourceName": "unauthorized_file.csv.gz",
+    "additionalDetails": {
+      "namespace": "<namespace>",
+      "bucketName": "<bucket-name>"
+    }
+  }
+}'
+```
+
+### Function Behavior
+
+- **Valid files** (filename starts with `base64(secret)_`): Allowed, function returns success
+- **Invalid files** (filename doesn't match): Deleted automatically, security alert logged
+- **Missing secret**: Function returns error
+- **Missing namespace/bucket**: Function returns error with details
+

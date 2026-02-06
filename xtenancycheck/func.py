@@ -74,7 +74,11 @@ def handler(ctx, data: io.BytesIO = None):
             # Parse JSON
             try:
                 event_data = json.loads(decoded_data)
-                logger.info(f"Parsed event data: {json.dumps(event_data, indent=2)}")
+                logger.info(f"Parsed event data keys: {list(event_data.keys())}")
+                if 'data' in event_data:
+                    logger.info(f"Event data.data keys: {list(event_data['data'].keys())}")
+                    if 'additionalDetails' in event_data.get('data', {}):
+                        logger.info(f"Event data.data.additionalDetails keys: {list(event_data['data']['additionalDetails'].keys())}")
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON: {str(e)}")
                 logger.error(f"Data content: {decoded_data[:1000]}")
@@ -101,67 +105,70 @@ def handler(ctx, data: io.BytesIO = None):
             )
         
         # Extract object information from event
-        # OCI Object Storage events can have different structures:
-        # Structure 1 (Event Service):
+        # OCI Object Storage events structure:
         # {
         #   "eventType": "com.oraclecloud.objectstorage.createobject",
         #   "data": {
-        #     "resourceName": "namespace/bucket/object-name",
-        #     "additionalDetails": {...}
+        #     "resourceName": "object-name",  // Just the filename
+        #     "additionalDetails": {
+        #       "namespace": "namespace",
+        #       "bucketName": "bucket-name"
+        #     }
         #   }
         # }
-        # Structure 2 (Direct invocation with JSON):
-        # {
-        #   "namespace": "namespace",
-        #   "bucket": "bucket-name",
-        #   "object": "object-name"
-        # }
         
-        # Try Structure 1 first (Event Service format)
-        event_type = event_data.get('eventType', '')
         event_data_obj = event_data.get('data', {})
-        resource_name = event_data_obj.get('resourceName', '')
+        additional_details = event_data_obj.get('additionalDetails', {})
         
-        # Initialize variables
-        namespace = None
-        bucket_name = None
-        object_name = None
+        # Extract information from event structure
+        object_name = event_data_obj.get('resourceName', '')
+        namespace = additional_details.get('namespace', '')
+        bucket_name = additional_details.get('bucketName', '')
         
-        # If Structure 1 has resourceName, parse it
-        if resource_name:
-            # Parse resource name: namespace/bucket/object-name
-            parts = resource_name.split('/', 2)
-            if len(parts) >= 3:
-                namespace = parts[0]
-                bucket_name = parts[1]
-                object_name = parts[2]
-                logger.info(f"Extracted from resourceName: namespace={namespace}, bucket={bucket_name}, object={object_name}")
-            else:
-                logger.warning(f"Invalid resourceName format: {resource_name}")
+        if not object_name:
+            logger.error("No object name (resourceName) found in event data")
+            return response.Response(
+                ctx,
+                response_data=json.dumps({
+                    "message": "No object name found in event data",
+                    "status": "error"
+                }),
+                status_code=400
+            )
         
-        # If Structure 1 didn't work, try Structure 2 (direct format)
-        if not (namespace and bucket_name and object_name):
-            logger.info("Trying alternative event structure (direct format)")
-            namespace = event_data.get('namespace', '')
-            bucket_name = event_data.get('bucket', '')
-            object_name = event_data.get('object', '')
-            
-            if namespace and bucket_name and object_name:
-                logger.info(f"Using direct format: namespace={namespace}, bucket={bucket_name}, object={object_name}")
-            else:
-                logger.error("Could not find object information in either event format")
-                logger.error(f"Event data structure: {json.dumps(event_data, indent=2)}")
-                return response.Response(
-                    ctx,
-                    response_data=json.dumps({
-                        "message": "Could not extract object information from event",
-                        "event_keys": list(event_data.keys()),
-                        "status": "error"
-                    }),
-                    status_code=400
-                )
+        if not namespace:
+            logger.error("No namespace found in event data.additionalDetails")
+            return response.Response(
+                ctx,
+                response_data=json.dumps({
+                    "message": "No namespace found in event data",
+                    "status": "error"
+                }),
+                status_code=400
+            )
         
-        logger.info(f"Processing object: namespace={namespace}, bucket={bucket_name}, object={object_name}")
+        if not bucket_name:
+            logger.error("No bucketName found in event data.additionalDetails")
+            return response.Response(
+                ctx,
+                response_data=json.dumps({
+                    "message": "No bucketName found in event data",
+                    "status": "error"
+                }),
+                status_code=400
+            )
+        
+        logger.info(f"Extracted from event: namespace={namespace}, bucket={bucket_name}, object={object_name}")
+        
+        # Initialize OCI Object Storage client (needed for deletion)
+        if os.path.exists('/config'):
+            logger.info("Found /config file, using OCI CLI authentication")
+            config = oci.config.from_file('/config')
+            object_storage = oci.object_storage.ObjectStorageClient(config)
+        else:
+            logger.info("No /config file found, using Resource Principal authentication")
+            Signer = oci.auth.signers.get_resource_principals_signer()
+            object_storage = oci.object_storage.ObjectStorageClient(config={}, signer=Signer)
         
         # Calculate expected secret prefix
         secret_b64 = base64.b64encode(secret.encode('utf-8')).decode('utf-8')
@@ -170,28 +177,67 @@ def handler(ctx, data: io.BytesIO = None):
         logger.info(f"Expected prefix: {expected_prefix[:20]}...")
         logger.info(f"Object name: {object_name}")
         
-        # Check if object name starts with the expected prefix
+        # Check if object name (filename) starts with the expected secret prefix
         if not object_name.startswith(expected_prefix):
             logger.warning(f"SECURITY ALERT: Object '{object_name}' does not have correct secret prefix!")
             logger.warning(f"Expected prefix: {expected_prefix[:20]}..., Got: {object_name[:20]}...")
             
-            # Initialize OCI Object Storage client
-            if os.path.exists('/config'):
-                logger.info("Found /config file, using OCI CLI authentication")
-                config = oci.config.from_file('/config')
-                object_storage = oci.object_storage.ObjectStorageClient(config)
-            else:
-                logger.info("No /config file found, using Resource Principal authentication")
-                Signer = oci.auth.signers.get_resource_principals_signer()
-                object_storage = oci.object_storage.ObjectStorageClient(config={}, signer=Signer)
+            # Validate all required parameters before attempting deletion
+            if not namespace or not namespace.strip():
+                logger.error(f"Cannot delete file - namespace is empty or None: '{namespace}'")
+                return response.Response(
+                    ctx,
+                    response_data=json.dumps({
+                        "message": "File validation failed but cannot delete - namespace is empty",
+                        "status": "validation_failed",
+                        "object_name": object_name,
+                        "namespace": str(namespace) if namespace else "None",
+                        "bucket": bucket_name or "missing"
+                    }),
+                    status_code=200
+                )
+            
+            if not bucket_name or not bucket_name.strip():
+                logger.error(f"Cannot delete file - bucket name is empty or None: '{bucket_name}'")
+                logger.error(f"Event data keys: {list(event_data.keys())}")
+                logger.error(f"Event data.data keys: {list(event_data_obj.keys())}")
+                return response.Response(
+                    ctx,
+                    response_data=json.dumps({
+                        "message": "File validation failed but cannot delete - bucket is empty",
+                        "status": "validation_failed",
+                        "object_name": object_name,
+                        "namespace": namespace,
+                        "bucket": str(bucket_name) if bucket_name else "None",
+                        "event_structure": {
+                            "top_level_keys": list(event_data.keys()),
+                            "data_keys": list(event_data_obj.keys())
+                        }
+                    }),
+                    status_code=200
+                )
+            
+            if not object_name or not object_name.strip():
+                logger.error(f"Cannot delete file - object name is empty or None: '{object_name}'")
+                return response.Response(
+                    ctx,
+                    response_data=json.dumps({
+                        "message": "File validation failed but cannot delete - object name is empty",
+                        "status": "validation_failed",
+                        "object_name": str(object_name) if object_name else "None",
+                        "namespace": namespace,
+                        "bucket": bucket_name
+                    }),
+                    status_code=200
+                )
             
             # Delete the unauthorized file
             try:
-                logger.info(f"Deleting unauthorized file: {object_name}")
+                logger.info(f"Deleting unauthorized file: namespace='{namespace}', bucket='{bucket_name}', object='{object_name}'")
                 object_storage.delete_object(
-                    namespace_name=namespace,
-                    bucket_name=bucket_name,
-                    object_name=object_name
+                    namespace_name=namespace.strip(),
+                    bucket_name=bucket_name.strip(),
+                    object_name=object_name.strip()
                 )
                 logger.info(f"Successfully deleted unauthorized file: {object_name}")
                 
@@ -214,6 +260,8 @@ def handler(ctx, data: io.BytesIO = None):
                         "message": "File validation failed but deletion error occurred",
                         "status": "error",
                         "object_name": object_name,
+                        "namespace": namespace,
+                        "bucket": bucket_name,
                         "error": str(delete_ex)
                     }),
                     status_code=500
