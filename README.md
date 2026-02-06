@@ -89,7 +89,7 @@ To build and run this function locally using `Dockerfile.oci_cli`, you need to p
 #### Security Note
 
 **⚠️ CRITICAL**: The `Dockerfile.oci_cli` embeds OCI credentials into the Docker image. This is **ONLY** for local testing. **DO NOT**:
-- Push this image to any registry (public or private)
+- Push this image to any public registry
 - Use this Dockerfile for production deployments
 - Distribute or share images built with this Dockerfile
 
