@@ -119,15 +119,15 @@ Both functions can be built and run locally using `build-local.sh`. Local deploy
 5. **Invoke** (test payload):
 
    ```bash
-   fn invoke <app-name> xtenancycheck --content '{
+   echo '{
      "data": {
        "resourceName": "<base64_secret>_testfile.csv.gz",
        "additionalDetails": {
-         "namespace": "<namespace>",
-         "bucketName": "<bucket-name>"
+         "namespace": "frsxwtjslf35",
+         "bucketName": "usage-report"
        }
      }
-   }'
+   }' | fn invoke <app-name> xtenancycheck
    ```
 
 ## IAM Policies (Dynamic Group)
