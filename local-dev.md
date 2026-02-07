@@ -132,7 +132,7 @@ Both functions can be built and run locally using `build-local.sh`. Local deploy
 
 ## IAM Policies (Dynamic Group)
 
-When using Resource Principal in OCI:
+When using Resource Principal in OCI: the functions use Resource Principal at runtime when CLI config is not found in `.oci` (i.e. when built without `Dockerfile.oci_cli`, such as standard deploy from source or prebuilt images). When using `build-local.sh` with `Dockerfile.oci_cli`, `.oci` is embedded so CLI auth is used instead.
 
 ```hcl
 Allow dynamic-group <dynamic-group-name> to manage objects in compartment <compartment-name>
