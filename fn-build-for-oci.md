@@ -115,3 +115,21 @@ fn config function <app-name> xtenancycheck secret "<your_secret>"
 4. **Action**: Functions → select your application and `xtenancycheck` function
 
 The event delivers object metadata (namespace, bucket, object name) to the function. Ensure the function's dynamic group has `manage objects` and `read objectstorage-namespace` on the bucket compartment.
+
+## IAM Policies (Dynamic Group)
+
+Both functions use Resource Principal in OCI. Create a dynamic group that includes your function and grant it these policies:
+
+**For copyusagereport and xtenancycheck** (general Object Storage access):
+
+```hcl
+Allow dynamic-group <dynamic-group-name> to manage objects in compartment <compartment-name>
+Allow dynamic-group <dynamic-group-name> to read objectstorage-namespace in compartment <compartment-name>
+```
+
+**For xtenancycheck** (to restrict to a specific bucket):
+
+```hcl
+Allow dynamic-group <dynamic-group-name> to manage objects in compartment <compartment-name> where target.bucket.name='<bucket-name>'
+Allow dynamic-group <dynamic-group-name> to read objectstorage-namespace in compartment <compartment-name>
+```
