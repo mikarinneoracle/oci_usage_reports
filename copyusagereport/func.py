@@ -55,17 +55,22 @@ def handler(ctx, data: io.BytesIO = None):
         logger.info(f"Starting report copy process")
         logger.info(f"Configuration - tenancy_ocid: {tenancy_ocid}, bucket_name: {bucket_name}")
         
-        # Check if cross-tenancy upload is requested
-        # NOTE: PAR (Pre-Authenticated Request) must be created at the bucket root with write privileges,
-        # without any prefix (directory). The PAR should allow writing objects to the bucket root.
-        use_cross_tenancy = x_tenancy_par is not None
-        use_secret_prefix = secret is not None and use_cross_tenancy
-        
+        # Secret prefix: use when secret is defined (for both in-tenancy and cross-tenancy)
+        # so xtenancycheck validation works consistently.
+        use_secret_prefix = bool(secret and str(secret).strip())
+
+        # PAR upload: use only when BOTH secret and x-tenancy_par are defined.
+        # NOTE: PAR must be created at the bucket root with write privileges, without prefix.
+        use_cross_tenancy = (
+            bool(x_tenancy_par and str(x_tenancy_par).strip()) and
+            bool(secret and str(secret).strip())
+        )
+
         if use_cross_tenancy:
             logger.info(f"Cross-tenancy upload enabled with PAR: {x_tenancy_par[:50]}...")
             logger.info("PAR must be created at bucket root with write privileges, without prefix")
         if use_secret_prefix:
-            logger.info("Secret prefix will be added to filenames for cross-tenancy upload")
+            logger.info("Secret prefix will be added to filenames (enables xtenancycheck for in-tenancy and cross-tenancy)")
         
         yesterday = datetime.now() - timedelta(days=3)
         prefix_file = f"FOCUS Reports/{yesterday.year}/{yesterday.strftime('%m')}/{yesterday.strftime('%d')}"

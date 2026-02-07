@@ -50,13 +50,12 @@ OPTIONS:
     -r, --registry REGISTRY       Docker registry (optional, for fn deploy)
     -i, --image IMAGE             Docker image name (default: xtenancycheck:local)
     -e, --use-existing            Use existing Docker image instead of building
-    -l, --local                   Deploy to local fn server (default, explicit flag)
+    -l, --local                   Deploy to local fn server (default)
     -v, --verbose                 Enable verbose output
     -h, --help                    Show this help message
 
 EXAMPLES:
     $0 -a myapp
-    $0 -a myapp -l
     $0 -a myapp -r myregistry.ocir.io
     $0 -a myapp -e -i xtenancycheck:local
     $0 -a myapp -v
@@ -129,6 +128,11 @@ fi
 # Check prerequisites
 print_info "Checking prerequisites..."
 
+if [ ! -f "Dockerfile.oci_cli" ]; then
+    print_error "Dockerfile.oci_cli not found. Run this script from the xtenancycheck/ directory."
+    exit 1
+fi
+
 # Check if Docker is installed
 if ! command -v docker &> /dev/null; then
     print_error "Docker is not installed. Please install Docker first."
@@ -184,8 +188,9 @@ print_info "Prerequisites check passed"
 # Step 1: Setup OCI credentials
 print_info "Setting up OCI credentials..."
 
+# Dockerfile.oci_cli requires .oci/config and .oci/oci_api_key.pem in the function directory
 if [ ! -d ".oci" ]; then
-    print_info "Creating .oci directory..."
+    print_info "Creating .oci directory (required by Dockerfile.oci_cli)..."
     mkdir -p .oci
     print_verbose "Created .oci directory"
     
@@ -288,8 +293,8 @@ fi
 # Step 3: Deploy to local fn server
 print_info "Deploying to local fn server..."
 
-# fn deploy automatically uses Dockerfile in the function directory
-# We need to temporarily copy Dockerfile.oci_cli to Dockerfile for deployment
+# fn deploy uses Dockerfile in the function directory; we use Dockerfile.oci_cli for CLI auth
+# Temporarily copy Dockerfile.oci_cli to Dockerfile for deployment
 DOCKERFILE_BACKUP=""
 if [ -f "Dockerfile" ]; then
     DOCKERFILE_BACKUP="Dockerfile.backup.$$"
