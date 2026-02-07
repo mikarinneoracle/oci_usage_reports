@@ -17,7 +17,7 @@ cd oci_usage_reports
 
 ## Step 3: Create Function Application with VCN (Private Subnet)
 
-1. In OCI Console, go to **Developer Services** → **Networking** and create a **VCN** if you don't have one
+1. In OCI Console, go to **Networking** and create a **VCN** if you don't have one
 2. Create a **private subnet** in the VCN
 3. Go to **Developer Services** → **Applications** (Functions)
 4. Click **Create Application**
