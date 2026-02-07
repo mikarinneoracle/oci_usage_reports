@@ -123,8 +123,8 @@ Both functions can be built and run locally using `build-local.sh`. Local deploy
      "data": {
        "resourceName": "<base64_secret>_testfile.csv.gz",
        "additionalDetails": {
-         "namespace": "frsxwtjslf35",
-         "bucketName": "usage-report"
+         "namespace": "<namespace>",
+         "bucketName": "<bucket-name>"
        }
      }
    }' | fn invoke <app-name> xtenancycheck
