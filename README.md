@@ -33,7 +33,7 @@ Both functions run as **Resource Principal** by default when deployed to Oracle 
 1. **Dynamic Group**: Create a dynamic group that includes your function
 2. **IAM Policies**: Grant the dynamic group Object Storage and namespace permissions
 
-For local development, both functions can be built using the `build-local.sh` script in each function's directory, which pushes to a **private** OCIR repository (private is mandatory).
+For local development, both functions can be built using the `build-local.sh` script in each function's directory, which uses user CLI config for IAM credentials (instead of Resource Principal).
 
 ## Documentation
 
