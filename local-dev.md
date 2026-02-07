@@ -58,12 +58,16 @@ Both functions can be built and run locally using `build-local.sh`. Local deploy
    | Config key | Meaning |
    |------------|---------|
    | `tenancy_ocid` | Tenancy OCID of the source reporting bucket. Omit to auto-detect from CLI config. |
+   | `days` | Number of days to look back for reports (default 3, range 0–31). |
    | `x-tenancy_par` | Pre-authenticated Request (PAR) URL for cross-tenancy upload. Use only with `secret`. |
    | `secret` | Secret value; base64-encoded and prepended to filenames. Enables xtenancycheck validation for in-tenancy and cross-tenancy. |
 
    ```bash
    # Optional – only if auto-detect fails
    fn config function <app-name> copyusagereport tenancy_ocid "<tenancy_ocid>"
+
+   # Optional – days to look back (default 3)
+   fn config function <app-name> copyusagereport days "3"
 
    # Optional – for cross-tenancy upload (both required together)
    fn config function <app-name> copyusagereport x-tenancy_par "<par_url>"

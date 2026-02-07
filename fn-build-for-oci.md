@@ -75,12 +75,16 @@ fn config function <app-name> copyusagereport bucket_name "<your_bucket_name>"
 | Config key | Meaning |
 |------------|---------|
 | `tenancy_ocid` | Tenancy OCID of the source reporting bucket. Omit to auto-detect from Resource Principal. |
+| `days` | Number of days to look back for reports (default 3, range 0–31). |
 | `x-tenancy_par` | Pre-authenticated Request (PAR) URL for cross-tenancy upload. Use only with `secret`; both must be set for PAR upload. |
 | `secret` | Secret value; base64-encoded and prepended to filenames when defined. Enables xtenancycheck validation for both in-tenancy and cross-tenancy. |
 
 ```bash
 # Optional – only if auto-detect fails
 fn config function <app-name> copyusagereport tenancy_ocid "<tenancy_ocid>"
+
+# Optional – days to look back (default 3)
+fn config function <app-name> copyusagereport days "3"
 
 # Optional – for cross-tenancy upload
 fn config function <app-name> copyusagereport x-tenancy_par "<par_url>"

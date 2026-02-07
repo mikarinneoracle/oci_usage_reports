@@ -71,9 +71,17 @@ def handler(ctx, data: io.BytesIO = None):
             logger.info("PAR must be created at bucket root with write privileges, without prefix")
         if use_secret_prefix:
             logger.info("Secret prefix will be added to filenames (enables xtenancycheck for in-tenancy and cross-tenancy)")
+
+        # Days to look back for reports (default 3)
+        try:
+            days = int(cfg.get('days', 3))
+        except (TypeError, ValueError):
+            days = 3
+        days = max(0, min(days, 31))  # clamp 0-31
+        logger.info(f"Looking back {days} day(s) for reports")
         
-        yesterday = datetime.now() - timedelta(days=3)
-        prefix_file = f"FOCUS Reports/{yesterday.year}/{yesterday.strftime('%m')}/{yesterday.strftime('%d')}"
+        report_date = datetime.now() - timedelta(days=days)
+        prefix_file = f"FOCUS Reports/{report_date.year}/{report_date.strftime('%m')}/{report_date.strftime('%d')}"
         logger.info(f"Looking for reports with prefix: {prefix_file}")
         logger.info(f"Reporting namespace: {reporting_namespace}")
         logger.info(f"Source bucket OCID: {tenancy_ocid}")
@@ -129,7 +137,7 @@ def handler(ctx, data: io.BytesIO = None):
             
             with open(local_file_path, 'rb') as file_content:
                 # Build object name
-                base_object_name = f"{yesterday.year}_{yesterday.strftime('%m')}_{yesterday.strftime('%d')}_{filename}"
+                base_object_name = f"{report_date.year}_{report_date.strftime('%m')}_{report_date.strftime('%d')}_{filename}"
                 
                 # Add secret prefix if cross-tenancy upload with secret is enabled
                 if use_secret_prefix:
