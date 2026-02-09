@@ -29,7 +29,101 @@ Prebuilt Docker images are available on Docker Hub. They must be pulled, tagged 
 5. Create the repository
 6. Note your registry URL: `<region-key>.ocir.io/<tenancy-namespace>/<repo-name>`
 
-## Step 3: Pull, Tag, Push, and Deploy
+## Step 3: Pull, Tag, Push, and Deploy via OCI Console UI
+
+Pull images from Docker Hub, tag for OCIR, and push to your registry. Then create functions in the OCI Console.
+
+### Pull, Tag, and Push Images
+
+```bash
+# Login to Docker Hub (if needed)
+docker login
+
+# Login to OCIR
+docker login <region-key>.ocir.io
+# Use: <tenancy-namespace>/<username>, Auth Token as password
+
+# copyusagereport
+docker pull mikarinneoracle/oci-copy-usage-report:x86
+docker tag mikarinneoracle/oci-copy-usage-report:x86 <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:x86
+docker push <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:x86
+
+# xtenancycheck
+docker pull mikarinneoracle/oci-xtenancy-check:x86
+docker tag mikarinneoracle/oci-xtenancy-check:x86 <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:x86
+docker push <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:x86
+```
+
+### Create Functions in OCI Console
+
+1. Go to **Developer Services** → **Applications** → select your application
+2. Click **Create Function**
+3. **Function Name**: e.g., `copyusagereport` or `xtenancycheck`
+4. **Image**: Select the image from OCIR (e.g., `<region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:x86`)
+5. **Memory**: e.g., 512 MB
+6. **Timeout**: e.g., 300 seconds
+7. Click **Create**
+
+### Configure Function Settings
+
+After creating the function, configure it:
+
+1. Go to the function details page
+2. Click **Configuration** tab
+3. Add environment variables (these become function config):
+
+   **For copyusagereport**:
+   - `bucket_name` (required): Target bucket name
+   - `tenancy_ocid` (optional): Source tenancy OCID
+   - `days` (optional): Days to look back (default 3)
+   - `x-tenancy_par` (optional): PAR URL for cross-tenancy
+   - `secret` (optional): Secret for filename prefix
+
+   **For xtenancycheck**:
+   - `secret` (required): Secret for validation
+
+4. Click **Save Changes**
+
+### copyusagereport Configuration
+
+**Required configuration**:
+| Config key | Meaning |
+|------------|---------|
+| `bucket_name` | Target bucket where usage reports will be copied |
+
+**Optional configuration**:
+| Config key | Meaning |
+|------------|---------|
+| `tenancy_ocid` | Tenancy OCID of the source reporting bucket. Omit to auto-detect from Resource Principal. |
+| `days` | Number of days to look back for reports (default 3, range 0–31). |
+| `x-tenancy_par` | Pre-authenticated Request (PAR) URL for cross-tenancy upload. Use only with `secret`; both must be set for PAR upload. |
+| `secret` | Secret value; base64-encoded and prepended to filenames when defined. Enables xtenancycheck validation for both in-tenancy and cross-tenancy. |
+
+PAR must be created at the **bucket root** with **write** privileges and **no prefix**.
+
+**OCI Scheduling**: `copyusagereport` runs on demand; to run it periodically (e.g. daily), use OCI Resource Scheduler. See [Scheduling a Function](https://docs.oracle.com/en-us/iaas/Content/Functions/Tasks/functionsscheduling.htm). From the Functions Console: select the function → **Schedules** → **Add Schedule** → create or select a schedule (cron, daily, etc.). Create a dynamic group and policy for the schedule.
+
+### xtenancycheck Configuration
+
+**Required configuration**:
+| Config key | Meaning |
+|------------|---------|
+| `secret` | Same secret as copyusagereport. Files whose names don't start with `base64(secret)_` are deleted. |
+
+**Object Storage event triggering**: `xtenancycheck` must be triggered by Object Storage bucket events. Configure an event rule in OCI Events Service:
+
+1. **Developer Services** → **Events** → **Create Rule**
+2. **Event Type**: Object Storage → **Object - Create** (and optionally **Object - Update** for overwrites)
+3. **Compartment / Bucket**: Select the bucket where files are uploaded
+4. **Action**: Functions → select your application and `xtenancycheck` function
+
+The event delivers object metadata (namespace, bucket, object name) to the function. Ensure the function's dynamic group has `manage objects` and `read objectstorage-namespace` on the bucket compartment.
+
+---
+
+## Step 4: Deploy using Fn CLI
+
+Alternatively, use Fn CLI to deploy functions from OCIR images.
 
 Configure Fn CLI for OCI:
 
