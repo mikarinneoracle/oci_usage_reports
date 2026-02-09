@@ -35,6 +35,8 @@ Pull images from Docker Hub, tag for OCIR, and push to your registry. Then creat
 
 ### Pull, Tag, and Push Images
 
+You can run these commands locally or in **OCI Cloud Shell** (accessible from the OCI Console header). Cloud Shell has Docker pre-installed and is already authenticated to your tenancy.
+
 ```bash
 # Login to Docker Hub (if needed)
 docker login
