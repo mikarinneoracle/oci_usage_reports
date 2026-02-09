@@ -39,7 +39,6 @@ jobs:
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           tags: |
             mikarinneoracle/oci-copy-usage-report:x86
-            mikarinneoracle/oci-copy-usage-report:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -51,6 +50,5 @@ jobs:
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           tags: |
             mikarinneoracle/oci-xtenancy-check:x86
-            mikarinneoracle/oci-xtenancy-check:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
