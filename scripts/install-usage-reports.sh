@@ -676,8 +676,9 @@ ocir_docker_login() {
     esac
   fi
 
-  # Base prefix without trailing slash; we will append username if needed
-  prefix="${namespace}/${domain_segment}"
+  # OCIR expects the identity domain segment in lowercase (e.g. oracleidentitycloudservice).
+  domain_segment_lower="$(printf '%s' "$domain_segment" | tr '[:upper:]' '[:lower:]')"
+  prefix="${namespace}/${domain_segment_lower}"
   suggested_user="${prefix}"
 
   # Try to detect a sensible default username (user part) from OCI CLI config.
@@ -708,6 +709,7 @@ ocir_docker_login() {
     if [[ -n "$default_token" ]]; then
       token="$default_token"
       info "Using the auth token just generated."
+      warn "If login fails, wait 1–2 minutes for the new token to propagate and try again."
       default_token=""  # use only once; prompt on retry if login fails
     else
       read -s -p "Enter OCIR auth token (will not be echoed): " token || true
@@ -719,12 +721,18 @@ ocir_docker_login() {
     fi
 
     info "Testing Docker login to ${host} with username '${user}' (attempt ${attempt}/3)..."
-    if printf '%s' "$token" | docker login "$host" -u "$user" --password-stdin; then
-      info "Docker login to OCIR succeeded."
-      return 0
-    fi
-
-    warn "Docker login failed. Please check username and auth token and try again."
+    while true; do
+      if printf '%s' "$token" | docker login "$host" -u "$user" --password-stdin; then
+        info "Docker login to OCIR succeeded."
+        return 0
+      fi
+      warn "Docker login failed. Token propagation may take a minute for new tokens."
+      if ! confirm "Retry in 10 seconds? (token propagation)" "y"; then
+        break
+      fi
+      info "Waiting 10 seconds before retry..."
+      sleep 10
+    done
   done
 
   error "Could not log in to OCIR after 3 attempts."
