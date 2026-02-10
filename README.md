@@ -2,6 +2,8 @@
 
 This repository contains Oracle Functions for managing OCI Cost/Usage reports, including copying reports within a tenancy or across tenancies, and validating cross-tenancy uploads.
 
+**Easiest way to get usage reports running:** use the **scripted installer** (`scripts/install-usage-reports.sh`). It creates the VCN, bucket, and both functions (copyusagereport and optionally xtenancycheck) via the OCI CLI and guides you through each step. The other approaches (Fn CLI, build from source, local Fn server) are only needed if you want to **custom-build and test** the functions yourself.
+
 ## Overview
 
 ### copyusagereport Function
@@ -52,13 +54,59 @@ Both functions run as **Resource Principal** by default when deployed to Oracle 
 
 For local development, both functions can be built using the `build-local.sh` script in each function's directory, which uses user CLI config for IAM credentials (instead of Resource Principal).
 
+## Scripted Install (recommended)
+
+The installer is the simplest way to deploy usage-report functions. Run it from the **repository root**:
+
+```bash
+./scripts/install-usage-reports.sh
+```
+
+To reuse defaults (e.g. for testing), source `scripts/.env` first:
+
+```bash
+source scripts/.env && ./scripts/install-usage-reports.sh
+```
+
+### Optional: settings in `scripts/.env`
+
+You can set these in `scripts/.env` so the installer uses them as defaults (no need to type them every time). All are optional.
+
+| Variable | Meaning | Example |
+|----------|---------|--------|
+| `INSTALLER_CHOICE` | Where to run: `1` = Cloud Shell, `2` = Localhost, `3` = Quit | `2` |
+| `COMPARTMENT_NAME` | Compartment for the Functions application | `mika.rinne` |
+| `APP_NAME` | OCI Functions application name | `usage-reports-app` |
+| `ARCH` | Architecture for prebuilt images: `x86` or `arm` | `arm` |
+| `OCIR_REPO_NAME` | OCIR repository name for pushed images | `oci-usage-reports` |
+| `BUCKET_NAME` | Target bucket for copyusagereport | `copyusagereport` |
+| `VCN_NAME` | VCN name when creating a new VCN | `oci-usage-reports` |
+| `SUBNET_NAME` | Private subnet name when creating a new VCN | `oci-usage-reports-private` |
+| `VCN_CIDR` | VCN CIDR when creating a new VCN | `10.0.0.0/16` |
+| `SUBNET_CIDR` | Subnet CIDR when creating a new VCN | `10.0.1.0/24` |
+| `OCIR_TOKEN_DESCRIPTION` | Description for a new OCIR auth token | `usage-reports-ocir-token` |
+| `PAR_TTL_DAYS` | PAR validity in days when creating a new PAR | `365` |
+
+### What the installer does (briefly)
+
+1. **Where to run** – Choose Cloud Shell (1) or Localhost (2). On localhost, it configures OCI CLI config path and profile.
+2. **Region, namespace, bucket** – Prompts for OCI region, OCIR namespace, and target bucket name for copyusagereport.
+3. **Architecture** – Select x86 or arm for prebuilt images and app shape.
+4. **Functions application** – Asks for compartment and app name; creates a new VCN with private subnet (and Service Gateway + route for OCIR) or lets you pick an existing subnet, then creates the OCI Functions application.
+5. **OCIR auth (optional)** – Option to create an OCIR auth token; user OCID default comes from CLI config. If a token is just generated, it is used automatically for the next Docker login.
+6. **Docker** – Logs in to OCIR, pulls prebuilt images, tags and pushes them to your OCIR repo.
+7. **Bucket** – Ensures the target Object Storage bucket exists in the app’s compartment (creates it if missing).
+8. **Secret and PAR** – Asks for a secret (optional; used for cross-tenancy and xtenancycheck). If given, offers: create a new PAR (with TTL in days), use an existing PAR URL, or skip. PAR URL is stored in copyusagereport config.
+9. **copyusagereport** – Creates the function with config (bucket, days, optional secret and `x-tenancy_par`).
+10. **xtenancycheck (optional)** – If a secret was set, offers to deploy xtenancycheck with the same secret.
+11. **Quick test (optional)** – Can invoke copyusagereport and run a short xtenancycheck test (upload/delete object with secret prefix).
+
+After deployment, schedule **copyusagereport** (e.g. via OCI Resource Scheduler) and attach **xtenancycheck** to the bucket’s Object Storage events (see [Multi-tenancy](#multi-tenancy-cross-tenancy-setup) and the linked docs).
+
 ## Documentation
 
+- **[Scripted Install (recommended)](#scripted-install-recommended)** – Easiest option: run `scripts/install-usage-reports.sh` for an interactive installer (VCN, bucket, both functions, optional PAR). Use other approaches only if you need to custom-build and test.
 - **[Fn Build for OCI](fn-build-for-oci.md)** – Install Fn, clone repo, create VCN/OCIR, deploy from source; OCI scheduling for copyusagereport; Object Storage events for xtenancycheck
-- **[Using Prebuilt Functions](using-prebuilt-functions.md)** – Deploy prebuilt Docker images (VCN, OCIR, pull/tag/push/deploy); same scheduling and event setup
+- **[Using Prebuilt Functions](using-prebuilt-functions.md)** – Deploy prebuilt Docker images manually (VCN, OCIR, pull/tag/push/deploy); same scheduling and event setup
 - **[Local Development](local-dev.md)** – Build and run locally with Fn server; optionally deploy to OCI with private OCIR when using CLI config instead of Resource Principal
-- **Scripted Install** – Run `scripts/install-usage-reports.sh` from the repo root for an interactive installer with three options:
-  - Prebuilt images to OCI using Fn CLI (recommended)
-  - Build from source and deploy to OCI with Fn CLI
-  - Build and run locally with Fn server and OCI CLI credentials
 
