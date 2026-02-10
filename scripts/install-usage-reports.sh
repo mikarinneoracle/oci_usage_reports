@@ -792,21 +792,7 @@ install_prebuilt_with_fn() {
 
   repo_name="$(prompt_default 'Enter OCIR repository name' "${OCIR_REPO_NAME:-oci-usage-reports}")"
 
-  # Bucket name: propose 'copyusagereport' as default; Enter accepts it.
-  while true; do
-    bucket_name="$(prompt_default 'Enter target bucket_name for copyusagereport' "${BUCKET_NAME:-copyusagereport}")"
-    if [[ -n "$bucket_name" ]]; then
-      break
-    fi
-    warn "bucket_name is required; please enter a non-empty value."
-  done
-
-  # tenancy_ocid is no longer prompted; leave empty to rely on function config defaults.
-  tenancy_ocid=""
-  days="$(prompt_default 'Optional: days lookback for reports (default 3)' '3')"
-
-  # Architecture selection for prebuilt images
-  # Select the architecture that matches your local system (used for app shape and image tags).
+  # Architecture selection for prebuilt images (needed before creating the Functions application for shape).
   info "Select the architecture that matches your local system."
   while true; do
     arch="$(prompt_default 'Select architecture for prebuilt images (x86/arm)' "${ARCH:-x86}")"
@@ -827,12 +813,53 @@ install_prebuilt_with_fn() {
     esac
   done
 
-  local registry="${region_key}.ocir.io/${namespace}/${repo_name}"
-
-  # Create the Functions application (existence in target compartment is checked inside; shape matches selected arch)
+  # Create the Functions application (prompts for compartment, then app name, then VCN/subnet; shape matches selected arch).
   create_functions_application "${arch_tag}"
   if [[ -z "$FN_APP_ID" ]]; then
     error "Internal error: Functions application OCID not set after creation."
+  fi
+
+  # Bucket name: propose 'copyusagereport' as default; Enter accepts it.
+  while true; do
+    bucket_name="$(prompt_default 'Enter target bucket_name for copyusagereport' "${BUCKET_NAME:-copyusagereport}")"
+    if [[ -n "$bucket_name" ]]; then
+      break
+    fi
+    warn "bucket_name is required; please enter a non-empty value."
+  done
+
+  # tenancy_ocid is no longer prompted; leave empty to rely on function config defaults.
+  tenancy_ocid=""
+  days="$(prompt_default 'Optional: days lookback for reports (default 3)' '3')"
+
+  local registry="${region_key}.ocir.io/${namespace}/${repo_name}"
+
+  # Create OCIR container repositories in the Functions app compartment (not tenancy root) so the function can pull images.
+  # Image paths are namespace/repo_name/oci-copy-usage-report and namespace/repo_name/oci-xtenancy-check; create both repo paths.
+  local app_compartment_id existing_repo repo_path
+  app_compartment_id="$(run_oci fn application get --application-id "$FN_APP_ID" --query 'data."compartment-id"' --raw-output 2>/dev/null || true)"
+  if [[ -n "$app_compartment_id" && "$app_compartment_id" != "null" ]]; then
+    for repo_path in "${repo_name}/oci-copy-usage-report" "${repo_name}/oci-xtenancy-check"; do
+      info "Ensuring OCIR repository '${repo_path}' exists in the Functions app compartment..."
+      existing_repo="$(run_oci artifacts container repository list \
+        --compartment-id "$app_compartment_id" \
+        --display-name "$repo_path" \
+        --query 'data[0].id' --raw-output 2>/dev/null || true)"
+      if [[ -z "$existing_repo" || "$existing_repo" == "null" ]]; then
+        if run_oci artifacts container repository create \
+          --compartment-id "$app_compartment_id" \
+          --display-name "$repo_path" \
+          --query 'data.id' --raw-output; then
+          info "OCIR repository '${repo_path}' created in app compartment."
+        else
+          warn "Could not create OCIR repository '${repo_path}' in app compartment (check permissions). Push may create it in tenancy root; if function fails to pull (502), create the repository in the app compartment and re-push."
+        fi
+      else
+        info "OCIR repository '${repo_path}' already exists in app compartment."
+      fi
+    done
+  else
+    warn "Could not get Functions app compartment; OCIR repositories may be created in tenancy root on first push."
   fi
 
   if confirm "Create a new OCIR auth token now (recommended if you don't have one yet)?" "n"; then
@@ -854,13 +881,18 @@ install_prebuilt_with_fn() {
   info "Pushing images to OCIR (${arch_tag})"
   push_ocir_with_retry() {
     local img="$1"
-    local push_out
-    if push_out="$(docker push "$img" 2>&1)"; then
+    local push_out tmp
+    tmp="$(mktemp)"
+    if docker push "$img" 2>&1 | tee "$tmp"; then
+      rm -f "$tmp"
       return 0
     fi
+    push_out="$(cat "$tmp")"
+    rm -f "$tmp"
     if [[ "$push_out" == *[Uu]nauthorized* || "$push_out" == *"invalid username/password"* ]]; then
       warn "Push failed (auth); token may need a moment to propagate. Retrying in 10s..."
       sleep 10
+      info "Retrying push: $img"
       docker push "$img" || { echo "$push_out" >&2; return 1; }
     else
       echo "$push_out" >&2
