@@ -152,9 +152,10 @@ docker tag mikarinneoracle/oci-copy-usage-report:x86 <region-key>.ocir.io/<tenan
 # Push to OCIR
 docker push <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:x86
 
-# Deploy
+# Create function from prebuilt image
 cd copyusagereport
-fn deploy --app <app-name> --image <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:x86
+fn create function <app-name> copyusagereport \
+  <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-copy-usage-report:x86
 ```
 
 **Required configuration**:
@@ -202,9 +203,10 @@ docker tag mikarinneoracle/oci-xtenancy-check:x86 <region-key>.ocir.io/<tenancy-
 # Push to OCIR
 docker push <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:x86
 
-# Deploy
+# Create function from prebuilt image
 cd xtenancycheck
-fn deploy --app <app-name> --image <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:x86
+fn create function <app-name> xtenancycheck \
+  <region-key>.ocir.io/<tenancy-namespace>/<repo-name>/oci-xtenancy-check:x86
 ```
 
 **Required configuration**:
