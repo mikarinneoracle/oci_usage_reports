@@ -26,6 +26,23 @@ The `xtenancycheck` function validates uploaded files in Object Storage by check
 - **copyusagereport**: Run on demand or schedule via [OCI Resource Scheduler](https://docs.oracle.com/en-us/iaas/Content/Functions/Tasks/functionsscheduling.htm) (e.g. daily).
 - **xtenancycheck**: Triggered by Object Storage bucket **Object - Create** (and optionally **Object - Update**) events. Configure an event rule in OCI Events Service pointing to the target bucket and the `xtenancycheck` function.
 
+### Multi-tenancy Cross-Tenancy Setup
+
+When setting up **cross-tenancy reports**, you may want to:
+
+- **Deploy both functions (`copyusagereport` and `xtenancycheck`) into each participating tenancy**, and
+- **Share a common `secret` value and bucket-level PAR URL between those tenancies.**
+
+In this pattern:
+
+- One tenancy **hosts the destination reports bucket** and the **PAR** (created on that bucket).
+- All other tenancies:
+  - Deploy their own `copyusagereport` and `xtenancycheck` functions.
+  - Configure the **same `secret`** and **same PAR URL** on their `copyusagereport` function.
+  - Configure the **same `secret`** on their `xtenancycheck` function that protects the destination bucket.
+
+As a result, **multiple tenancies** can upload reports into the **same bucket** (in the PAR-hosting tenancy), while `xtenancycheck` enforces the shared secret prefix. This setup requires you to have **credentials and permissions in all involved tenancies** (one hosting the reports bucket and any number of “source” tenancies).
+
 ### Authentication and Deployment
 
 Both functions run as **Resource Principal** by default when deployed to Oracle Functions. This requires:
@@ -40,3 +57,8 @@ For local development, both functions can be built using the `build-local.sh` sc
 - **[Fn Build for OCI](fn-build-for-oci.md)** – Install Fn, clone repo, create VCN/OCIR, deploy from source; OCI scheduling for copyusagereport; Object Storage events for xtenancycheck
 - **[Using Prebuilt Functions](using-prebuilt-functions.md)** – Deploy prebuilt Docker images (VCN, OCIR, pull/tag/push/deploy); same scheduling and event setup
 - **[Local Development](local-dev.md)** – Build and run locally with Fn server; optionally deploy to OCI with private OCIR when using CLI config instead of Resource Principal
+- **Scripted Install** – Run `scripts/install-usage-reports.sh` from the repo root for an interactive installer with three options:
+  - Prebuilt images to OCI using Fn CLI (recommended)
+  - Build from source and deploy to OCI with Fn CLI
+  - Build and run locally with Fn server and OCI CLI credentials
+

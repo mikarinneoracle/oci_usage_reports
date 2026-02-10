@@ -103,6 +103,24 @@ After creating the function, configure it:
 
 PAR must be created at the **bucket root** with **write** privileges and **no prefix**.
 
+#### Creating PAR in Cloud UI (cross-tenancy setup)
+
+If you enable cross-tenancy upload using `x-tenancy_par`:
+
+1. In OCI Console, go to **Object Storage** → **Buckets** and open the **target bucket** where `copyusagereport` writes.
+2. Click **Pre-Authenticated Requests** in the left navigation.
+3. Click **Create Pre-Authenticated Request**.
+4. Set **Request target** to **Bucket**.
+5. Set **Access type** to **Permit object writes to bucket**.
+6. Leave **Object name** / **Prefix** empty (no prefix) so the PAR applies to the whole bucket root.
+7. Set an appropriate **Expiration** (for testing you can use ~1 year).
+8. Click **Create Pre-Authenticated Request** and copy the generated URL.
+9. Configure `copyusagereport` with that URL:
+
+   ```bash
+   fn config function <app-name> copyusagereport x-tenancy_par "<par_url>"
+   ```
+
 **OCI Scheduling**: `copyusagereport` runs on demand; to run it periodically (e.g. daily), use OCI Resource Scheduler. See [Scheduling a Function](https://docs.oracle.com/en-us/iaas/Content/Functions/Tasks/functionsscheduling.htm). From the Functions Console: select the function → **Schedules** → **Add Schedule** → create or select a schedule (cron, daily, etc.). Create a dynamic group and policy for the schedule.
 
 ### xtenancycheck Configuration

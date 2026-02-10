@@ -120,6 +120,23 @@ fn config function <app-name> xtenancycheck secret "<your_secret>"
 
 The event delivers object metadata (namespace, bucket, object name) to the function. Ensure the function's dynamic group has `manage objects` and `read objectstorage-namespace` on the bucket compartment.
 
+### Multi-tenancy Cross-Tenancy Setup
+
+For **cross-tenancy reports across multiple tenancies**, a common pattern is:
+
+- **Deploy both functions (`copyusagereport` and `xtenancycheck`) into each participating tenancy.**
+- **Use a shared `secret` and a shared bucket-level PAR URL across all those tenancies.**
+
+In this setup:
+
+- One tenancy **hosts the destination reports bucket** and the **PAR** (created on that bucket).
+- All other tenancies:
+  - Deploy their own `copyusagereport` and `xtenancycheck` functions.
+  - Configure the **same `secret`** and **same PAR URL** on their `copyusagereport` function.
+  - Configure the **same `secret`** on their `xtenancycheck` function that protects the destination bucket.
+
+This allows **multiple tenancies** to send reports into the **same bucket** in the PAR-hosting tenancy, while `xtenancycheck` in that tenancy enforces the shared secret prefix. You’ll need **credentials and IAM permissions in all involved tenancies** (one hosting the reports bucket and any number of “source” tenancies).
+
 ## IAM Policies (Dynamic Group)
 
 Both functions use Resource Principal in OCI. Create a dynamic group that includes your function and grant it these policies:
