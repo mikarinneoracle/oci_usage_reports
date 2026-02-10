@@ -73,27 +73,16 @@ cd oci_usage_reports
 
 **macOS (localhost)**
 
-1. Clone the repo over HTTPS and run the installer; when prompted, choose **2** (Localhost):
+1. Clone the repo over HTTPS, source `scripts/.env` (optional defaults), and run the installer; when prompted, choose **2** (Localhost):
 
 ```bash
 git clone https://github.com/mikarinneoracle/oci_usage_reports.git
 cd oci_usage_reports
+source scripts/.env
 ./scripts/install-usage-reports.sh
 ```
 
 The script will ask for your OCI CLI config path and profile when running on localhost.
-
-**Run from repository root (any environment)**
-
-```bash
-./scripts/install-usage-reports.sh
-```
-
-To reuse defaults (e.g. for testing), source `scripts/.env` first:
-
-```bash
-source scripts/.env && ./scripts/install-usage-reports.sh
-```
 
 ### Optional: settings in `scripts/.env`
 
