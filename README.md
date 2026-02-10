@@ -60,20 +60,10 @@ The installer is the simplest way to deploy usage-report functions.
 
 ### Clone and run
 
-**OCI Cloud Shell**
+From **OCI Cloud Shell** (open via the terminal icon in the OCI Console) or **macOS (localhost)**:
 
-1. In OCI Console, open **Cloud Shell** (terminal icon in the top bar).
-2. Clone the repo over HTTPS and run the installer; when prompted, choose **1** (Cloud Shell):
-
-```bash
-git clone https://github.com/mikarinneoracle/oci_usage_reports.git
-cd oci_usage_reports
-./scripts/install-usage-reports.sh
-```
-
-**macOS (localhost)**
-
-1. Clone the repo over HTTPS, source `scripts/.env` (optional defaults), and run the installer; when prompted, choose **2** (Localhost):
+1. Clone the repo over HTTPS, source `scripts/.env` (optional defaults), and run the installer.
+2. When prompted for where to run: use the default **1** (Cloud Shell) if in Cloud Shell, or choose **2** (Localhost) on macOS. On localhost the script will ask for your OCI CLI config path and profile.
 
 ```bash
 git clone https://github.com/mikarinneoracle/oci_usage_reports.git
@@ -81,8 +71,6 @@ cd oci_usage_reports
 source scripts/.env
 ./scripts/install-usage-reports.sh
 ```
-
-The script will ask for your OCI CLI config path and profile when running on localhost.
 
 ### Optional: settings in `scripts/.env`
 
