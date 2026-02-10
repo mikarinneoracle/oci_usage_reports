@@ -74,8 +74,8 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 
 | Variable | Meaning | Example |
 |----------|---------|--------|
-| `INSTALLER_CHOICE` | Where to run: `1` = Cloud Shell, `2` = Localhost, `3` = Quit | `2` |
-| `COMPARTMENT_NAME` | Compartment for the Functions application | `mika.rinne` |
+| `INSTALLER_CHOICE` | Where to run: `1` = Cloud Shell, `2` = Localhost, `3` = Quit | *(customize)* |
+| `COMPARTMENT_NAME` | Compartment for the Functions application | *(customize)* |
 | `APP_NAME` | OCI Functions application name | `usage-reports-app` |
 | `ARCH` | Architecture for prebuilt images: `x86` or `arm` | `arm` |
 | `OCIR_REPO_NAME` | OCIR repository name for pushed images | `oci-usage-reports` |
