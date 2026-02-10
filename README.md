@@ -56,7 +56,34 @@ For local development, both functions can be built using the `build-local.sh` sc
 
 ## Scripted Install (recommended)
 
-The installer is the simplest way to deploy usage-report functions. Run it from the **repository root**:
+The installer is the simplest way to deploy usage-report functions.
+
+### Clone and run
+
+**OCI Cloud Shell**
+
+1. In OCI Console, open **Cloud Shell** (terminal icon in the top bar).
+2. Clone the repo over HTTPS and run the installer; when prompted, choose **1** (Cloud Shell):
+
+```bash
+git clone https://github.com/mikarinneoracle/oci_usage_reports.git
+cd oci_usage_reports
+./scripts/install-usage-reports.sh
+```
+
+**macOS (localhost)**
+
+1. Clone the repo over HTTPS and run the installer; when prompted, choose **2** (Localhost):
+
+```bash
+git clone https://github.com/mikarinneoracle/oci_usage_reports.git
+cd oci_usage_reports
+./scripts/install-usage-reports.sh
+```
+
+The script will ask for your OCI CLI config path and profile when running on localhost.
+
+**Run from repository root (any environment)**
 
 ```bash
 ./scripts/install-usage-reports.sh
