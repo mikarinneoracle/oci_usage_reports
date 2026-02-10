@@ -852,8 +852,23 @@ install_prebuilt_with_fn() {
   docker tag "mikarinneoracle/oci-xtenancy-check:${arch_tag}" "${registry}/oci-xtenancy-check:${arch_tag}"
 
   info "Pushing images to OCIR (${arch_tag})"
-  docker push "${registry}/oci-copy-usage-report:${arch_tag}"
-  docker push "${registry}/oci-xtenancy-check:${arch_tag}"
+  push_ocir_with_retry() {
+    local img="$1"
+    local push_out
+    if push_out="$(docker push "$img" 2>&1)"; then
+      return 0
+    fi
+    if [[ "$push_out" == *[Uu]nauthorized* || "$push_out" == *"invalid username/password"* ]]; then
+      warn "Push failed (auth); token may need a moment to propagate. Retrying in 10s..."
+      sleep 10
+      docker push "$img" || { echo "$push_out" >&2; return 1; }
+    else
+      echo "$push_out" >&2
+      return 1
+    fi
+  }
+  push_ocir_with_retry "${registry}/oci-copy-usage-report:${arch_tag}" || error "Failed to push oci-copy-usage-report image."
+  push_ocir_with_retry "${registry}/oci-xtenancy-check:${arch_tag}" || error "Failed to push oci-xtenancy-check image."
 
   # Ensure the target Object Storage bucket exists (function will fail with BucketNotFound otherwise).
   local app_compartment_id ns
