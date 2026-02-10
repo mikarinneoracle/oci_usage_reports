@@ -846,12 +846,17 @@ install_prebuilt_with_fn() {
         --display-name "$repo_path" \
         --query 'data[0].id' --raw-output 2>/dev/null || true)"
       if [[ -z "$existing_repo" || "$existing_repo" == "null" ]]; then
-        if run_oci artifacts container repository create \
+        local create_out
+        create_out="$(run_oci artifacts container repository create \
           --compartment-id "$app_compartment_id" \
           --display-name "$repo_path" \
-          --query 'data.id' --raw-output; then
+          --query 'data.id' --raw-output 2>&1)" || true
+        if [[ "$create_out" =~ ^ocid1\. ]]; then
           info "OCIR repository '${repo_path}' created in app compartment."
+        elif [[ "$create_out" == *"Repository already exists"* || "$create_out" == *"NAMESPACE_CONFLICT"* ]]; then
+          info "OCIR repository '${repo_path}' already exists (reusing existing)."
         else
+          [[ -n "$create_out" ]] && echo "$create_out" >&2
           warn "Could not create OCIR repository '${repo_path}' in app compartment (check permissions). Push may create it in tenancy root; if function fails to pull (502), create the repository in the app compartment and re-push."
         fi
       else
