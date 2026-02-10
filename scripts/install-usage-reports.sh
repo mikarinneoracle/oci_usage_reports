@@ -33,6 +33,33 @@ FN_XTEN_ID=""
 # If create_ocir_auth_token just generated a token, it is stored here for use as default in ocir_docker_login.
 OCIR_AUTH_TOKEN=""
 
+# Run OCI CLI with optional config/profile (avoids "unbound variable" when args are empty under set -u)
+run_oci() {
+  if [[ -n "${OCI_CLI_CONFIG_PATH:-}" ]] || [[ -n "${OCI_CLI_PROFILE_NAME:-}" ]]; then
+    local oci_extra=()
+    [[ -n "${OCI_CLI_CONFIG_PATH:-}" ]] && oci_extra+=(--config-file "$OCI_CLI_CONFIG_PATH")
+    [[ -n "${OCI_CLI_PROFILE_NAME:-}" ]] && oci_extra+=(--profile "$OCI_CLI_PROFILE_NAME")
+    oci "${oci_extra[@]}" "$@"
+  else
+    oci "$@"
+  fi
+}
+
+# Same as run_oci but with optional --region (e.g. for network service list)
+run_oci_region() {
+  local region_key="${1:-}"
+  shift
+  if [[ -n "${OCI_CLI_CONFIG_PATH:-}" ]] || [[ -n "${OCI_CLI_PROFILE_NAME:-}" ]] || [[ -n "$region_key" ]]; then
+    local oci_extra=()
+    [[ -n "${OCI_CLI_CONFIG_PATH:-}" ]] && oci_extra+=(--config-file "$OCI_CLI_CONFIG_PATH")
+    [[ -n "${OCI_CLI_PROFILE_NAME:-}" ]] && oci_extra+=(--profile "$OCI_CLI_PROFILE_NAME")
+    [[ -n "$region_key" ]] && oci_extra+=(--region "$region_key")
+    oci "${oci_extra[@]}" "$@"
+  else
+    oci "$@"
+  fi
+}
+
 info()  { echo "[INFO]  $*"; }
 warn()  { echo "[WARN]  $*" >&2; }
 error() { echo "[ERROR] $*" >&2; exit 1; }
@@ -122,23 +149,10 @@ detect_default_region() {
 
 detect_default_namespace() {
   # Try to detect OCIR / Object Storage namespace using OCI CLI.
-  # Uses the interactive config path/profile when available.
-  local args=()
-
-  if [[ -n "$OCI_CLI_CONFIG_PATH" ]]; then
-    args+=(--config-file "$OCI_CLI_CONFIG_PATH")
-  fi
-  if [[ -n "$OCI_CLI_PROFILE_NAME" ]]; then
-    args+=(--profile "$OCI_CLI_PROFILE_NAME")
-  fi
-
-  # oci os ns get returns JSON with "data": "<namespace>"
-  # We use --raw-output to get plain namespace.
   if ! command -v oci >/dev/null 2>&1; then
     return 1
   fi
-
-  oci "${args[@]}" os ns get --query 'data' --raw-output 2>/dev/null || return 1
+  run_oci os ns get --query 'data' --raw-output 2>/dev/null || return 1
 }
 
 detect_default_user_ocid() {
@@ -205,17 +219,10 @@ list_identity_domain_names() {
   # Filters by home-region matching the selected OCI region key when provided.
   local tenancy_ocid="$1"
   local region_key="${2:-}"
-  local args=()
-  if [[ -n "$OCI_CLI_CONFIG_PATH" ]]; then
-    args+=(--config-file "$OCI_CLI_CONFIG_PATH")
-  fi
-  if [[ -n "$OCI_CLI_PROFILE_NAME" ]]; then
-    args+=(--profile "$OCI_CLI_PROFILE_NAME")
-  fi
   if [[ -z "$tenancy_ocid" ]] || ! command -v oci >/dev/null 2>&1; then
     return 1
   fi
-  oci "${args[@]}" iam domain list --compartment-id "$tenancy_ocid" --all --output json 2>/dev/null | python3 -c "
+  run_oci iam domain list --compartment-id "$tenancy_ocid" --all --output json 2>/dev/null | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin).get('data', [])
@@ -233,14 +240,6 @@ except Exception:
 
 create_ocir_auth_token() {
   # Create a new OCIR auth token via OCI CLI for the selected user.
-  local args=()
-  if [[ -n "$OCI_CLI_CONFIG_PATH" ]]; then
-    args+=(--config-file "$OCI_CLI_CONFIG_PATH")
-  fi
-  if [[ -n "$OCI_CLI_PROFILE_NAME" ]]; then
-    args+=(--profile "$OCI_CLI_PROFILE_NAME")
-  fi
-
   if ! command -v oci >/dev/null 2>&1; then
     warn "OCI CLI not available; cannot create auth token automatically."
     return 1
@@ -260,10 +259,10 @@ create_ocir_auth_token() {
     return 1
   fi
 
-  desc="$(prompt_default 'Enter description for new OCIR auth token' "${OCIR_TOKEN_DESCRIPTION:-usage-reports-ocir-token}")"
+  desc="$(prompt_default 'Enter description for new OCIR auth token' "${OCIR_TOKEN_DESCRIPTION:-oci-usage-reports-ocir-token}")"
 
   info "Creating OCIR auth token via OCI CLI..."
-  token="$(oci "${args[@]}" iam auth-token create \
+  token="$(run_oci iam auth-token create \
       --user-id "$user_ocid" \
       --description "$desc" \
       --query 'data.token' \
@@ -296,14 +295,6 @@ create_functions_application() {
     *)   shape="GENERIC_X86" ;;
   esac
 
-  local args=()
-  if [[ -n "$OCI_CLI_CONFIG_PATH" ]]; then
-    args+=(--config-file "$OCI_CLI_CONFIG_PATH")
-  fi
-  if [[ -n "$OCI_CLI_PROFILE_NAME" ]]; then
-    args+=(--profile "$OCI_CLI_PROFILE_NAME")
-  fi
-
   if ! command -v oci >/dev/null 2>&1; then
     error "OCI CLI not available; cannot create Functions application automatically."
   fi
@@ -331,7 +322,7 @@ create_functions_application() {
 
   info "Resolving compartment '${compartment_name}'..."
   compartment_id="$(
-    oci "${args[@]}" iam compartment list \
+    run_oci iam compartment list \
       --compartment-id "$tenancy_ocid" \
       --compartment-id-in-subtree true \
       --all \
@@ -345,7 +336,7 @@ create_functions_application() {
 
   # Prompt for Functions application name after resolving compartment and ensure it does not already exist there.
   while true; do
-    app_name="$(prompt_default 'Enter Functions application name' "${APP_NAME:-usage-reports-app}")"
+    app_name="$(prompt_default 'Enter Functions application name' "${APP_NAME:-oci-usage-reports-app}")"
     if [[ -z "$app_name" ]]; then
       warn "Application name cannot be empty."
       continue
@@ -353,7 +344,7 @@ create_functions_application() {
 
     info "Checking if Fn application '${app_name}' already exists in compartment '${compartment_name}'..."
     existing_app="$(
-      oci "${args[@]}" fn application list \
+      run_oci fn application list \
         --compartment-id "$compartment_id" \
         --all \
         --query "data[?\"display-name\"=='${app_name}'].id | [0]" \
@@ -369,7 +360,7 @@ create_functions_application() {
   # Check if any VCNs exist in the compartment, then ask create vs select existing.
   info "Checking for existing VCNs in compartment '${compartment_name}'..."
   local vcn_count
-  vcn_count="$(oci "${args[@]}" network vcn list \
+  vcn_count="$(run_oci network vcn list \
     --compartment-id "$compartment_id" \
     --all \
     --query 'length(data)' \
@@ -400,7 +391,7 @@ create_functions_application() {
         [[ -z "$sid" || "$sid" != ocid* ]] && continue
         subnet_ids+=("$sid")
         subnet_names+=("${sname:-}")
-      done < <(oci "${args[@]}" network subnet list \
+      done < <(run_oci network subnet list \
         --compartment-id "$compartment_id" \
         --all \
         --output json 2>/dev/null | python3 -c "
@@ -443,7 +434,7 @@ except Exception:
       [[ -z "$vcn_name" ]] && { warn "VCN name cannot be empty."; continue; }
 
       existing_vcn_id="$(
-        oci "${args[@]}" network vcn list \
+        run_oci network vcn list \
           --compartment-id "$compartment_id" \
           --all \
           --query "data[?\"display-name\"=='${vcn_name}'].id | [0]" \
@@ -465,7 +456,7 @@ except Exception:
 
     info "Creating VCN '${vcn_name}' in compartment '${compartment_name}'..."
     vcn_id="$(
-      oci "${args[@]}" network vcn create \
+      run_oci network vcn create \
         --compartment-id "$compartment_id" \
         --display-name "$vcn_name" \
         --cidr-block "$vcn_cidr" \
@@ -480,14 +471,11 @@ except Exception:
     info "Adding Service Gateway and route for Oracle Services Network (required for OCIR image pull)..."
     local region_key svc_id svc_cidr sgw_id rt_id oci_err svc_name
     region_key="$(detect_default_region || true)"
-    # Build optional --region for service list so we query the same region the user is deploying to.
-    local list_args=("${args[@]}")
-    [[ -n "$region_key" ]] && list_args+=(--region "$region_key")
     # First service is typically "All <region> services in Oracle Services Network"; use its id and CIDR label.
     # Route table API expects a slug like "all-fra-services-in-oracle-services-network". CLI cidr_block can return
     # invalid data (e.g. JSON array); we always derive from service name and use that if API value looks wrong.
-    svc_id="$(oci "${list_args[@]}" network service list --all --query 'data[0].id' --raw-output 2>/dev/null || true)"
-    svc_name="$(oci "${list_args[@]}" network service list --all --query 'data[0].name' --raw-output 2>/dev/null || true)"
+    svc_id="$(run_oci_region "$region_key" network service list --all --query 'data[0].id' --raw-output 2>/dev/null || true)"
+    svc_name="$(run_oci_region "$region_key" network service list --all --query 'data[0].name' --raw-output 2>/dev/null || true)"
     # Derived label: "All FRA Services In Oracle Services Network" -> all-fra-services-in-oracle-services-network
     local name_derived_cidr
     if [[ -n "$svc_name" && "$svc_name" != "null" ]]; then
@@ -496,14 +484,14 @@ except Exception:
       name_derived_cidr=""
     fi
 
-    svc_cidr="$(oci "${list_args[@]}" network service list --all --query 'data[0].cidr_block' --raw-output 2>/dev/null || true)"
+    svc_cidr="$(run_oci_region "$region_key" network service list --all --query 'data[0].cidr_block' --raw-output 2>/dev/null || true)"
     svc_cidr="$(printf '%s' "$svc_cidr" | tr -d '\n')"
     # Reject API value if it looks like JSON or is not a single slug (route table expects e.g. all-fra-services-in-oracle-services-network)
     if [[ -z "$svc_cidr" || "$svc_cidr" == "null" || "$svc_cidr" =~ [\[\]\"\\] || "$svc_cidr" =~ [[:space:]] ]]; then
       svc_cidr="$name_derived_cidr"
     fi
     if [[ -z "$svc_cidr" ]]; then
-      svc_cidr="$(oci "${list_args[@]}" network service list --all --query 'data[0].cidrBlock' --raw-output 2>/dev/null || true)"
+      svc_cidr="$(run_oci_region "$region_key" network service list --all --query 'data[0].cidrBlock' --raw-output 2>/dev/null || true)"
       svc_cidr="$(printf '%s' "$svc_cidr" | tr -d '\n')"
       if [[ -z "$svc_cidr" || "$svc_cidr" == "null" || "$svc_cidr" =~ [\[\]\"\\] || "$svc_cidr" =~ [[:space:]] ]]; then
         svc_cidr="$name_derived_cidr"
@@ -512,7 +500,7 @@ except Exception:
     if [[ -n "$svc_id" && "$svc_id" != "null" && -n "$svc_cidr" && "$svc_cidr" != "null" ]]; then
       oci_err="$(mktemp)"
       sgw_id="$(
-        oci "${args[@]}" network service-gateway create \
+        run_oci network service-gateway create \
           --compartment-id "$compartment_id" \
           --vcn-id "$vcn_id" \
           --services "[{\"serviceId\":\"${svc_id}\"}]" \
@@ -532,7 +520,7 @@ except Exception:
       printf '[{"destinationType":"SERVICE_CIDR_BLOCK","destination":"%s","networkEntityId":"%s"}]' "$svc_cidr" "$sgw_id" > "$route_rules_file"
 
       rt_id="$(
-        oci "${args[@]}" network route-table create \
+        run_oci network route-table create \
           --compartment-id "$compartment_id" \
           --vcn-id "$vcn_id" \
           --display-name "${vcn_name}-private-rt" \
@@ -561,7 +549,7 @@ except Exception:
     fi
 
     subnet_id="$(
-      oci "${args[@]}" network subnet create \
+      run_oci network subnet create \
         --compartment-id "$compartment_id" \
         --vcn-id "$vcn_id" \
         --display-name "$subnet_name" \
@@ -585,7 +573,7 @@ except Exception:
 
   info "Running OCI CLI to create application (shape: ${shape})..."
   FN_APP_ID="$(
-    oci "${args[@]}" fn application create \
+    run_oci fn application create \
       --compartment-id "$compartment_id" \
       --display-name "$app_name" \
       --subnet-ids "$subnet_json" \
@@ -632,7 +620,6 @@ ocir_docker_login() {
   local user user_raw token suggested_user domain_choice domain_segment prefix
   local tenancy_ocid domains_array i n custom_opt
   local user_ocid default_user_login
-  local args=()
 
   info "OCIR login host: ${host}"
   warn "OCIR username format: \"namespace/domain/username\""
@@ -696,14 +683,8 @@ ocir_docker_login() {
   # Try to detect a sensible default username (user part) from OCI CLI config.
   user_ocid="$(detect_default_user_ocid || true)"
   if [[ -n "$user_ocid" ]] && command -v oci >/dev/null 2>&1; then
-    if [[ -n "$OCI_CLI_CONFIG_PATH" ]]; then
-      args+=(--config-file "$OCI_CLI_CONFIG_PATH")
-    fi
-    if [[ -n "$OCI_CLI_PROFILE_NAME" ]]; then
-      args+=(--profile "$OCI_CLI_PROFILE_NAME")
-    fi
     default_user_login="$(
-      oci "${args[@]}" iam user get \
+      run_oci iam user get \
         --user-id "$user_ocid" \
         --query 'data.name' \
         --raw-output 2>/dev/null || true
@@ -866,24 +847,15 @@ install_prebuilt_with_fn() {
   docker push "${registry}/oci-copy-usage-report:${arch_tag}"
   docker push "${registry}/oci-xtenancy-check:${arch_tag}"
 
-  # Prepare OCI CLI args for Functions operations
-  local fn_args=()
-  if [[ -n "$OCI_CLI_CONFIG_PATH" ]]; then
-    fn_args+=(--config-file "$OCI_CLI_CONFIG_PATH")
-  fi
-  if [[ -n "$OCI_CLI_PROFILE_NAME" ]]; then
-    fn_args+=(--profile "$OCI_CLI_PROFILE_NAME")
-  fi
-
   # Ensure the target Object Storage bucket exists (function will fail with BucketNotFound otherwise).
   local app_compartment_id ns
-  app_compartment_id="$(oci "${fn_args[@]}" fn application get --application-id "$FN_APP_ID" --query 'data."compartment-id"' --raw-output 2>/dev/null || true)"
+  app_compartment_id="$(run_oci fn application get --application-id "$FN_APP_ID" --query 'data."compartment-id"' --raw-output 2>/dev/null || true)"
   ns="$(detect_default_namespace || true)"
-  [[ -z "$ns" ]] && ns="$(oci "${fn_args[@]}" os ns get --query 'data' --raw-output 2>/dev/null || true)"
+  [[ -z "$ns" ]] && ns="$(run_oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
   if [[ -n "$app_compartment_id" && -n "$ns" ]]; then
-    if ! oci "${fn_args[@]}" os bucket get --namespace-name "$ns" --name "$bucket_name" >/dev/null 2>&1; then
+    if ! run_oci os bucket get --namespace-name "$ns" --name "$bucket_name" >/dev/null 2>&1; then
       info "Creating Object Storage bucket '${bucket_name}' in namespace '${ns}' (compartment of the Functions application)..."
-      if oci "${fn_args[@]}" os bucket create \
+      if run_oci os bucket create \
         --namespace-name "$ns" \
         --compartment-id "$app_compartment_id" \
         --name "$bucket_name" \
@@ -917,14 +889,14 @@ install_prebuilt_with_fn() {
         par_days="$((par_days + 0))"
         [[ "$par_days" -lt 1 ]] && par_days=365
         ns_par="$(detect_default_namespace || true)"
-        [[ -z "$ns_par" ]] && ns_par="$(oci "${fn_args[@]}" os ns get --query 'data' --raw-output 2>/dev/null || true)"
+        [[ -z "$ns_par" ]] && ns_par="$(run_oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
         if [[ -z "$ns_par" ]]; then
           warn "Could not determine Object Storage namespace; skipping PAR creation."
         else
           par_expiry="$(python3 -c "from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(days=$par_days)).isoformat(timespec='seconds').replace('+00:00','Z'))")"
           par_name="copyusagereport-par-$(date +%Y%m%d%H%M%S)"
           access_uri="$(
-            oci "${fn_args[@]}" os preauth-request create \
+            run_oci os preauth-request create \
               --namespace-name "$ns_par" \
               --bucket-name "$bucket_name" \
               --name "$par_name" \
@@ -968,7 +940,7 @@ install_prebuilt_with_fn() {
 
   info "Creating copyusagereport function with prebuilt image (${arch_tag}) via OCI CLI"
   FN_COPY_ID="$(
-    oci "${fn_args[@]}" fn function create \
+    run_oci fn function create \
       --application-id "$FN_APP_ID" \
       --display-name copyusagereport \
       --image "${registry}/oci-copy-usage-report:${arch_tag}" \
@@ -990,7 +962,7 @@ install_prebuilt_with_fn() {
 
       info "Creating xtenancycheck function with prebuilt image (${arch_tag}) via OCI CLI"
       FN_XTEN_ID="$(
-        oci "${fn_args[@]}" fn function create \
+        run_oci fn function create \
           --application-id "$FN_APP_ID" \
           --display-name xtenancycheck \
           --image "${registry}/oci-xtenancy-check:${arch_tag}" \
@@ -1032,14 +1004,11 @@ install_prebuilt_with_fn() {
       *) test_copy="yes" ;; # default to copyusagereport
     esac
 
-    # Use same CLI context args for testing
-    local test_args=("${fn_args[@]}")
-
     if [[ "$test_copy" == "yes" && -n "$FN_COPY_ID" && "$FN_COPY_ID" != "null" ]]; then
       info "Invoking copyusagereport via OCI CLI for a quick smoke test..."
       local invoke_out
       invoke_out="$(mktemp)"
-      if oci "${test_args[@]}" fn function invoke \
+      if run_oci fn function invoke \
         --function-id "$FN_COPY_ID" \
         --body '{}' \
         --file "$invoke_out" \
@@ -1064,7 +1033,7 @@ install_prebuilt_with_fn() {
       ns="$(detect_default_namespace || true)"
       if [[ -z "$ns" ]]; then
         if command -v oci >/dev/null 2>&1; then
-          ns="$(oci "${test_args[@]}" os ns get --query 'data' --raw-output 2>/dev/null || true)"
+          ns="$(run_oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
         fi
       fi
       if [[ -z "$ns" ]]; then
@@ -1076,7 +1045,7 @@ install_prebuilt_with_fn() {
         printf 'xtenancycheck test\n' >"$tmpfile"
 
         info "Uploading test object '${test_obj}' to bucket '${bucket_name}' (namespace '${ns}')..."
-        if oci "${test_args[@]}" os object put \
+        if run_oci os object put \
           --bucket-name "$bucket_name" \
           --namespace "$ns" \
           --name "$test_obj" \
@@ -1086,7 +1055,7 @@ install_prebuilt_with_fn() {
           info "Test object uploaded. Waiting briefly to allow any event processing..."
           sleep 5
           info "Deleting test object '${test_obj}' from bucket '${bucket_name}'..."
-          oci "${test_args[@]}" os object delete \
+          run_oci os object delete \
             --bucket-name "$bucket_name" \
             --namespace "$ns" \
             --object-name "$test_obj" \

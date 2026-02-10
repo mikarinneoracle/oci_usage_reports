@@ -80,7 +80,7 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 |----------|---------|--------|
 | `INSTALLER_CHOICE` | Where to run: `1` = Cloud Shell, `2` = Localhost, `3` = Quit | *(customize)* |
 | `COMPARTMENT_NAME` | Compartment for the Functions application | *(customize)* |
-| `APP_NAME` | OCI Functions application name | `usage-reports-app` |
+| `APP_NAME` | OCI Functions application name | `oci-usage-reports-app` |
 | `ARCH` | Architecture for prebuilt images: `x86` or `arm` | *(configure)* |
 | `OCIR_REPO_NAME` | OCIR repository name for pushed images | `oci-usage-reports` |
 | `BUCKET_NAME` | Target bucket for copyusagereport | `copyusagereport` |
@@ -88,7 +88,7 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 | `SUBNET_NAME` | Private subnet name when creating a new VCN | `oci-usage-reports-private` |
 | `VCN_CIDR` | VCN CIDR when creating a new VCN | `10.0.0.0/16` |
 | `SUBNET_CIDR` | Subnet CIDR when creating a new VCN | `10.0.1.0/24` |
-| `OCIR_TOKEN_DESCRIPTION` | Description for a new OCIR auth token | `usage-reports-ocir-token` |
+| `OCIR_TOKEN_DESCRIPTION` | Description for a new OCIR auth token | `oci-usage-reports-ocir-token` |
 | `PAR_TTL_DAYS` | PAR validity in days when creating a new PAR | `365` |
 
 ### What the installer does (briefly)

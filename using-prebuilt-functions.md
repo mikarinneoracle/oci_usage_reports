@@ -15,7 +15,7 @@ Prebuilt Docker images are available on Docker Hub. They must be pulled, tagged 
 2. Create a **private subnet** in the VCN
 3. Go to **Developer Services** → **Applications** (Functions)
 4. Click **Create Application**
-5. **Name**: e.g., `usage-reports-app`
+5. **Name**: e.g., `oci-usage-reports-app`
 6. **VCN**: Select your VCN
 7. **Subnets**: Select your **private subnet**
 8. Create the application
