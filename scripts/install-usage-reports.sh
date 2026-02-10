@@ -727,11 +727,11 @@ ocir_docker_login() {
         return 0
       fi
       warn "Docker login failed. Token propagation may take a minute for new tokens."
-      if ! confirm "Retry in 10 seconds? (token propagation)" "y"; then
+      if ! confirm "Retry in 60 seconds? (token propagation)" "y"; then
         break
       fi
-      info "Waiting 10 seconds before retry..."
-      sleep 10
+      info "Waiting 60 seconds before retry..."
+      sleep 60
     done
   done
 
