@@ -735,14 +735,16 @@ except Exception as e:
     info "  Listing object versions..."
     local versions
     local versions_error
+    local versions_exit_code
     versions_error="$(run_oci os object list \
       --bucket-name "$bucket_name" \
       --namespace-name "$namespace" \
       --all \
       --versions \
       --output json 2>&1)"
+    versions_exit_code=$?
     
-    if [[ $? -ne 0 ]]; then
+    if [[ $versions_exit_code -ne 0 ]]; then
       warn "    Failed to list object versions: ${versions_error}"
     else
       versions="$(echo "$versions_error" | python3 -c "
@@ -781,10 +783,13 @@ except Exception:
         if [[ $versions_deleted -gt 0 ]]; then
           info "    ✓ Deleted ${versions_deleted} object version(s)"
         fi
+      else
+        info "    No object versions found"
       fi
     fi
     
     # Now delete the bucket itself
+    info "  Attempting to delete bucket..."
     local delete_error
     delete_error="$(run_oci os bucket delete \
       --bucket-name "$bucket_name" \
