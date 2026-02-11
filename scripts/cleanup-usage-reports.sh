@@ -537,6 +537,82 @@ except Exception:
     [[ -z "$bucket_name" ]] && continue
     
     info "Deleting bucket: ${bucket_name}"
+    
+    # First, delete all objects in the bucket
+    info "  Deleting objects in bucket..."
+    local objects_deleted=0
+    local objects
+    objects="$(run_oci os object list \
+      --bucket-name "$bucket_name" \
+      --namespace-name "$namespace" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', {}).get('objects', [])
+    for obj in data:
+        name = obj.get('name') or ''
+        if name:
+            print(name)
+except Exception:
+    pass
+" 2>/dev/null || true)"
+    
+    if [[ -n "$objects" ]]; then
+      while IFS= read -r object_name; do
+        [[ -z "$object_name" ]] && continue
+        if run_oci os object delete \
+          --bucket-name "$bucket_name" \
+          --namespace-name "$namespace" \
+          --object-name "$object_name" \
+          --force >/dev/null 2>&1; then
+          objects_deleted=$((objects_deleted + 1))
+        fi
+      done <<< "$objects"
+      if [[ $objects_deleted -gt 0 ]]; then
+        info "    ✓ Deleted ${objects_deleted} object(s)"
+      fi
+    fi
+    
+    # Also delete object versions if versioning is enabled
+    local versions
+    versions="$(run_oci os object list \
+      --bucket-name "$bucket_name" \
+      --namespace-name "$namespace" \
+      --all \
+      --versions \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', {}).get('objects', [])
+    for obj in data:
+        name = obj.get('name') or ''
+        version_id = obj.get('version-id') or ''
+        if name and version_id:
+            print(f\"{name}|{version_id}\")
+except Exception:
+    pass
+" 2>/dev/null || true)"
+    
+    if [[ -n "$versions" ]]; then
+      local versions_deleted=0
+      while IFS='|' read -r object_name version_id; do
+        [[ -z "$object_name" ]] || [[ -z "$version_id" ]] && continue
+        if run_oci os object delete \
+          --bucket-name "$bucket_name" \
+          --namespace-name "$namespace" \
+          --object-name "$object_name" \
+          --version-id "$version_id" \
+          --force >/dev/null 2>&1; then
+          versions_deleted=$((versions_deleted + 1))
+        fi
+      done <<< "$versions"
+      if [[ $versions_deleted -gt 0 ]]; then
+        info "    ✓ Deleted ${versions_deleted} object version(s)"
+      fi
+    fi
+    
+    # Now delete the bucket itself
     if run_oci os bucket delete \
       --bucket-name "$bucket_name" \
       --namespace-name "$namespace" \
