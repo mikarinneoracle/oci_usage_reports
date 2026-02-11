@@ -997,6 +997,9 @@ confirm() {
 
 setup_dynamic_group_and_policies() {
   # Setup dynamic group and IAM policies for Functions Resource Principal authentication
+  # Optional first parameter: region_key (if provided, use it instead of detecting)
+  local provided_region_key="${1:-}"
+  
   if ! confirm "Set up IAM dynamic group and policies automatically?" "y"; then
     info "Skipping dynamic group and policy setup. You will need to create them manually."
     return 0
@@ -1017,13 +1020,20 @@ setup_dynamic_group_and_policies() {
   tenancy_ocid="$(detect_tenancy_ocid || true)"
   [[ -z "$tenancy_ocid" ]] && error "Could not detect tenancy OCID."
 
-  # Get region key
+  # Get region key - use provided one if available, otherwise try to detect
   local region_key
-  region_key="$(run_oci iam region list --query 'data[?contains(name, `"is-home-region"`) == `true`].name | [0]' --raw-output 2>/dev/null || true)"
-  if [[ -z "$region_key" ]]; then
-    region_key="$(run_oci iam region-subscription list --query 'data[?is-home-region == `true`].region-name | [0]' --raw-output 2>/dev/null || true)"
+  if [[ -n "$provided_region_key" ]]; then
+    region_key="$provided_region_key"
+    info "Using selected region: ${region_key}"
+  else
+    region_key="$(run_oci iam region list --query 'data[?contains(name, `"is-home-region"`) == `true`].name | [0]' --raw-output 2>/dev/null || true)"
+    if [[ -z "$region_key" ]]; then
+      region_key="$(run_oci iam region-subscription list --query 'data[?is-home-region == `true`].region-name | [0]' --raw-output 2>/dev/null || true)"
+    fi
+    if [[ -z "$region_key" ]]; then
+      warn "Could not determine region key; using default."
+    fi
   fi
-  [[ -z "$region_key" ]] && warn "Could not determine region key; using default."
 
   # Select identity domain (similar to ocir_login_cloud_shell)
   local domains_array domain_segment domain_segment_lower i n custom_opt domain_choice
@@ -1570,7 +1580,7 @@ install_prebuilt_with_fn() {
   fi
 
   # Setup dynamic group and IAM policies
-  setup_dynamic_group_and_policies
+  setup_dynamic_group_and_policies "$region_key"
 
   # Optional post-deploy test
   if confirm "Run a quick test of the deployed functions now?" "y"; then
