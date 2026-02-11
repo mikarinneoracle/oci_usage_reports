@@ -798,8 +798,8 @@ ocir_login_cloud_shell() {
     [[ -z "$namespace" ]] && error "Could not determine Object Storage namespace for OCIR login."
   fi
   
-  # Ask if user wants to login to OCIR (default no)
-  if ! confirm "Login to OCIR with auth token?" "n"; then
+  # Ask if user wants to login to OCIR (default yes)
+  if ! confirm "Login to OCIR with auth token?" "y"; then
     info "Skipping OCIR login. Will rely on existing docker login in Cloud Shell."
     return 0
   fi
