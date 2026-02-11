@@ -78,8 +78,8 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 
 | Variable | Meaning | Example |
 |----------|---------|--------|
-| `INSTALLER_CHOICE` | Where to run: `1` = Cloud Shell, `2` = Localhost, `3` = Quit | *(customize)* |
-| `COMPARTMENT_NAME` | Compartment for the Functions application | *(customize)* |
+| `INSTALLER_CHOICE` | Where to run: `1` = Cloud Shell, `2` = Localhost, `3` = Quit | *(configure)* |
+| `COMPARTMENT_NAME` | Compartment for the Functions application | *(configure)* |
 | `APP_NAME` | OCI Functions application name | `oci-usage-reports-app` |
 | `ARCH` | Architecture for prebuilt images: `x86` or `arm` | *(configure)* |
 | `OCIR_REPO_NAME` | OCIR repository name for pushed images | `oci-usage-reports` |
