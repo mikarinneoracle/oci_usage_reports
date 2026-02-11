@@ -5,9 +5,9 @@ set -euo pipefail
 # cleanup-usage-reports.sh
 #
 # Cleanup script to remove all OCI Usage Reports resources:
-#   - Functions applications and functions with name containing "oci-usage-reports"
-#   - OCIR repositories with name containing "oci-usage-reports"
-#   - VCNs and subnets with name containing "oci-usage-reports"
+#   - Functions applications and functions with name matching "oci-usage-reports*"
+#   - OCIR repositories with name matching "oci-usage-reports*"
+#   - VCNs and subnets with name matching "oci-usage-reports*"
 #
 # This script uses OCI CLI authentication only (not Resource Principal).
 # Run from the repository root or scripts directory.
@@ -160,7 +160,7 @@ delete_functions() {
   local compartment_id="$1"
   local deleted_count=0
   
-  info "Searching for Functions applications with name containing 'oci-usage-reports'..."
+  info "Searching for Functions applications with name matching 'oci-usage-reports*'..."
   
   local apps
   apps="$(run_oci fn application list \
@@ -172,14 +172,14 @@ try:
     data = json.load(sys.stdin).get('data', [])
     for app in data:
         name = app.get('display-name') or app.get('name') or ''
-        if 'oci-usage-reports' in name.lower():
+        if name.lower().startswith('oci-usage-reports'):
             print(f\"{app.get('id')}|{name}\")
 except Exception:
     pass
 " 2>/dev/null || true)"
   
   if [[ -z "$apps" ]]; then
-    info "No Functions applications found with name containing 'oci-usage-reports'."
+    info "No Functions applications found with name matching 'oci-usage-reports*'."
     return 0
   fi
   
@@ -234,7 +234,7 @@ delete_ocir_repos() {
   local compartment_id="$1"
   local deleted_count=0
   
-  info "Searching for OCIR repositories with name containing 'oci-usage-reports'..."
+  info "Searching for OCIR repositories with name matching 'oci-usage-reports*'..."
   
   local repos
   repos="$(run_oci artifacts container repository list \
@@ -246,14 +246,14 @@ try:
     data = json.load(sys.stdin).get('data', [])
     for repo in data:
         name = repo.get('display-name') or repo.get('name') or ''
-        if 'oci-usage-reports' in name.lower():
+        if name.lower().startswith('oci-usage-reports'):
             print(f\"{repo.get('id')}|{name}\")
 except Exception:
     pass
 " 2>/dev/null || true)"
   
   if [[ -z "$repos" ]]; then
-    info "No OCIR repositories found with name containing 'oci-usage-reports'."
+    info "No OCIR repositories found with name matching 'oci-usage-reports*'."
     return 0
   fi
   
@@ -276,7 +276,7 @@ delete_networks() {
   local compartment_id="$1"
   local deleted_count=0
   
-  info "Searching for VCNs with name containing 'oci-usage-reports'..."
+  info "Searching for VCNs with name matching 'oci-usage-reports*'..."
   
   local vcns
   vcns="$(run_oci network vcn list \
@@ -288,14 +288,14 @@ try:
     data = json.load(sys.stdin).get('data', [])
     for vcn in data:
         name = vcn.get('display-name') or vcn.get('name') or ''
-        if 'oci-usage-reports' in name.lower():
+        if name.lower().startswith('oci-usage-reports'):
             print(f\"{vcn.get('id')}|{name}\")
 except Exception:
     pass
 " 2>/dev/null || true)"
   
   if [[ -z "$vcns" ]]; then
-    info "No VCNs found with name containing 'oci-usage-reports'."
+    info "No VCNs found with name matching 'oci-usage-reports*'."
     return 0
   fi
   
@@ -316,7 +316,7 @@ try:
     data = json.load(sys.stdin).get('data', [])
     for subnet in data:
         name = subnet.get('display-name') or subnet.get('name') or ''
-        if 'oci-usage-reports' in name.lower():
+        if name.lower().startswith('oci-usage-reports'):
             print(f\"{subnet.get('id')}|{name}\")
 except Exception:
     pass
@@ -352,9 +352,9 @@ except Exception:
 main() {
   info "Cleanup OCI Usage Reports Resources"
   info "This will remove:"
-  info "  - Functions applications and functions with name containing 'oci-usage-reports'"
-  info "  - OCIR repositories with name containing 'oci-usage-reports'"
-  info "  - VCNs and subnets with name containing 'oci-usage-reports'"
+  info "  - Functions applications and functions with name matching 'oci-usage-reports*'"
+  info "  - OCIR repositories with name matching 'oci-usage-reports*'"
+  info "  - VCNs and subnets with name matching 'oci-usage-reports*'"
   echo
   
   # Setup OCI CLI context
@@ -382,7 +382,7 @@ main() {
   echo
   
   # Confirm deletion
-  if ! confirm "Delete all 'oci-usage-reports' resources in compartment '${compartment_name:-$compartment_id}'?" "n"; then
+  if ! confirm "Delete all 'oci-usage-reports*' resources in compartment '${compartment_name:-$compartment_id}'?" "n"; then
     info "Cleanup cancelled."
     exit 0
   fi
