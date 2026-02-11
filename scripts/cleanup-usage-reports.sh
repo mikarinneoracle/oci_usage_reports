@@ -367,6 +367,72 @@ except Exception:
     
     info "Found VCN: ${vcn_name} (${vcn_id})"
     
+    # Delete route tables first (they may reference service gateways)
+    info "  Searching for route tables in VCN..."
+    local route_tables
+    route_tables="$(run_oci network route-table list \
+      --compartment-id "$compartment_id" \
+      --vcn-id "$vcn_id" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', [])
+    for rt in data:
+        name = rt.get('display-name') or rt.get('name') or ''
+        # Match route tables that might be related (containing vcn name or -private-rt)
+        if '${vcn_pattern}' in name.lower() or '-private-rt' in name.lower() or '-rt' in name.lower():
+            print(f\"{rt.get('id')}|{name}\")
+except Exception:
+    pass
+" 2>/dev/null || true)"
+    
+    if [[ -n "$route_tables" ]]; then
+      while IFS='|' read -r rt_id rt_name; do
+        [[ -z "$rt_id" ]] && continue
+        info "    Deleting route table: ${rt_name} (${rt_id})"
+        if run_oci network route-table delete --rt-id "$rt_id" --force >/dev/null 2>&1; then
+          info "      ✓ Route table deleted: ${rt_name}"
+          deleted_resources+=("Route Table: ${rt_name}")
+          deleted_count=$((deleted_count + 1))
+        else
+          warn "      ✗ Failed to delete route table ${rt_name}."
+        fi
+      done <<< "$route_tables"
+    fi
+    
+    # Delete service gateways
+    info "  Searching for service gateways in VCN..."
+    local service_gateways
+    service_gateways="$(run_oci network service-gateway list \
+      --compartment-id "$compartment_id" \
+      --vcn-id "$vcn_id" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', [])
+    for sgw in data:
+        name = sgw.get('display-name') or sgw.get('name') or ''
+        print(f\"{sgw.get('id')}|{name}\")
+except Exception:
+    pass
+" 2>/dev/null || true)"
+    
+    if [[ -n "$service_gateways" ]]; then
+      while IFS='|' read -r sgw_id sgw_name; do
+        [[ -z "$sgw_id" ]] && continue
+        info "    Deleting service gateway: ${sgw_name:-unnamed} (${sgw_id})"
+        if run_oci network service-gateway delete --service-gateway-id "$sgw_id" --force >/dev/null 2>&1; then
+          info "      ✓ Service gateway deleted: ${sgw_name:-unnamed}"
+          deleted_resources+=("Service Gateway: ${sgw_name:-unnamed}")
+          deleted_count=$((deleted_count + 1))
+        else
+          warn "      ✗ Failed to delete service gateway ${sgw_name:-unnamed}."
+        fi
+      done <<< "$service_gateways"
+    fi
+    
     # List subnets in this VCN (use SUBNET_NAME pattern, removing suffix if present)
     local subnet_pattern="${SUBNET_NAME:-${vcn_pattern}-private}"
     subnet_pattern="${subnet_pattern%-private}"  # Remove -private suffix if present
@@ -390,22 +456,22 @@ except Exception:
     pass
 " 2>/dev/null || true)"
     
-    # Delete subnets first
+    # Delete subnets
     if [[ -n "$subnets" ]]; then
       while IFS='|' read -r subnet_id subnet_name; do
         [[ -z "$subnet_id" ]] && continue
-        info "  Deleting subnet: ${subnet_name} (${subnet_id})"
+        info "    Deleting subnet: ${subnet_name} (${subnet_id})"
         if run_oci network subnet delete --subnet-id "$subnet_id" --force >/dev/null 2>&1; then
-          info "    ✓ Subnet deleted: ${subnet_name}"
+          info "      ✓ Subnet deleted: ${subnet_name}"
           deleted_resources+=("Subnet: ${subnet_name}")
           deleted_count=$((deleted_count + 1))
         else
-          warn "    ✗ Failed to delete subnet ${subnet_name}."
+          warn "      ✗ Failed to delete subnet ${subnet_name}."
         fi
       done <<< "$subnets"
     fi
     
-    # Delete VCN
+    # Delete VCN (last, after all dependencies are removed)
     info "  Deleting VCN: ${vcn_name}"
     if run_oci network vcn delete --vcn-id "$vcn_id" --force >/dev/null 2>&1; then
       info "    ✓ VCN deleted: ${vcn_name}"
