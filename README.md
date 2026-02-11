@@ -54,6 +54,37 @@ Both functions run as **Resource Principal** by default when deployed to Oracle 
 
 For local development, both functions can be built using the `build-local.sh` script in each function's directory, which uses user CLI config for IAM credentials (instead of Resource Principal).
 
+## Deployment Scenarios
+
+### In-Tenancy Setup (Single Tenancy)
+
+For **in-tenancy setup** where usage reports remain within a single tenancy:
+
+- **No secret configuration required** – Skip the secret prompt when running the installer
+- **No PAR needed** – Reports are copied to buckets within the same tenancy
+- **No xtenancycheck function** – Security validation is not required for same-tenancy operations
+
+Simply run the installer and deploy only the `copyusagereport` function. Configure it with your target bucket name and optionally set the `days` parameter to control how far back to look for reports.
+
+### Cross-Tenancy Setup (Multiple Tenancies)
+
+For **cross-tenancy setup** where reports from multiple tenancies are consolidated into a single destination bucket:
+
+1. **Primary Tenancy** (where all reports are collected):
+   - Run the installer first
+   - When prompted for a secret, provide one (this will be shared across all tenancies)
+   - Choose option 1 to **create a new PAR** for the destination bucket
+   - Deploy **both functions**: `copyusagereport` and `xtenancycheck`
+   - The `xtenancycheck` function validates all incoming reports using the shared secret
+
+2. **Secondary Tenancies** (source tenancies sending reports):
+   - Run the installer in each secondary tenancy
+   - When prompted for a secret, use the **same secret** as the primary tenancy
+   - Choose option 2 to **use the existing PAR URL** (created in the primary tenancy)
+   - Deploy **only the `copyusagereport` function** – `xtenancycheck` is not needed in secondary tenancies
+
+This setup allows multiple tenancies to securely upload reports to a central bucket in the primary tenancy, with `xtenancycheck` enforcing the shared secret prefix for security validation.
+
 ## Scripted Install (recommended)
 
 The installer is the simplest way to deploy usage-report functions.
