@@ -939,14 +939,22 @@ ocir_login_cloud_shell() {
   fi
   
   # 5) Login to OCIR with format: namespace/domain/username and auth token (try initially, then retry up to 2 more times)
-  local attempt
+  local attempt login_err tmp_login
   for attempt in 1 2 3; do
     info "Logging in to OCIR (${host}) with username '${user}' (attempt ${attempt}/3)..."
-    if "${CONTAINER_CMD}" login "$host" -u "$user" -p "$token_value" 2>/dev/null; then
+    info "Command: ${CONTAINER_CMD} login ${host} -u '${user}' -p '***'"
+    tmp_login="$(mktemp)"
+    if "${CONTAINER_CMD}" login "$host" -u "$user" -p "$token_value" >"$tmp_login" 2>&1; then
+      rm -f "$tmp_login"
       info "${CONTAINER_CMD} login to OCIR succeeded."
       # Store token value for use in push retry
       token="$token_value"
       return 0
+    fi
+    login_err="$(cat "$tmp_login" 2>/dev/null || true)"
+    rm -f "$tmp_login"
+    if [[ -n "$login_err" ]]; then
+      warn "Login error: ${login_err}"
     fi
     if [[ $attempt -lt 3 ]]; then
       warn "Login failed (attempt ${attempt}/3). Token may need more time to propagate. Retrying in 10 seconds..."
