@@ -367,7 +367,45 @@ except Exception:
     
     info "Found VCN: ${vcn_name} (${vcn_id})"
     
-    # Delete route tables first (they may reference service gateways)
+    # Delete all subnets first (they may reference route tables)
+    info "  Searching for subnets in VCN..."
+    local subnet_pattern="${SUBNET_NAME:-${vcn_pattern}-private}"
+    subnet_pattern="${subnet_pattern%-private}"  # Remove -private suffix if present
+    subnet_pattern="${subnet_pattern,,}"  # Convert to lowercase
+    
+    local subnets
+    subnets="$(run_oci network subnet list \
+      --compartment-id "$compartment_id" \
+      --vcn-id "$vcn_id" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+pattern = '${subnet_pattern}'.lower()
+try:
+    data = json.load(sys.stdin).get('data', [])
+    for subnet in data:
+        name = subnet.get('display-name') or subnet.get('name') or ''
+        if name.lower().startswith(pattern):
+            print(f\"{subnet.get('id')}|{name}\")
+except Exception:
+    pass
+" 2>/dev/null || true)"
+    
+    if [[ -n "$subnets" ]]; then
+      while IFS='|' read -r subnet_id subnet_name; do
+        [[ -z "$subnet_id" ]] && continue
+        info "    Deleting subnet: ${subnet_name} (${subnet_id})"
+        if run_oci network subnet delete --subnet-id "$subnet_id" --force >/dev/null 2>&1; then
+          info "      ✓ Subnet deleted: ${subnet_name}"
+          deleted_resources+=("Subnet: ${subnet_name}")
+          deleted_count=$((deleted_count + 1))
+        else
+          warn "      ✗ Failed to delete subnet ${subnet_name}."
+        fi
+      done <<< "$subnets"
+    fi
+    
+    # Delete route tables (they may reference service gateways)
     info "  Searching for route tables in VCN..."
     local route_tables
     route_tables="$(run_oci network route-table list \
@@ -431,44 +469,6 @@ except Exception:
           warn "      ✗ Failed to delete service gateway ${sgw_name:-unnamed}."
         fi
       done <<< "$service_gateways"
-    fi
-    
-    # List subnets in this VCN (use SUBNET_NAME pattern, removing suffix if present)
-    local subnet_pattern="${SUBNET_NAME:-${vcn_pattern}-private}"
-    subnet_pattern="${subnet_pattern%-private}"  # Remove -private suffix if present
-    subnet_pattern="${subnet_pattern,,}"  # Convert to lowercase
-    
-    local subnets
-    subnets="$(run_oci network subnet list \
-      --compartment-id "$compartment_id" \
-      --vcn-id "$vcn_id" \
-      --all \
-      --output json 2>/dev/null | python3 -c "
-import sys, json
-pattern = '${subnet_pattern}'.lower()
-try:
-    data = json.load(sys.stdin).get('data', [])
-    for subnet in data:
-        name = subnet.get('display-name') or subnet.get('name') or ''
-        if name.lower().startswith(pattern):
-            print(f\"{subnet.get('id')}|{name}\")
-except Exception:
-    pass
-" 2>/dev/null || true)"
-    
-    # Delete subnets
-    if [[ -n "$subnets" ]]; then
-      while IFS='|' read -r subnet_id subnet_name; do
-        [[ -z "$subnet_id" ]] && continue
-        info "    Deleting subnet: ${subnet_name} (${subnet_id})"
-        if run_oci network subnet delete --subnet-id "$subnet_id" --force >/dev/null 2>&1; then
-          info "      ✓ Subnet deleted: ${subnet_name}"
-          deleted_resources+=("Subnet: ${subnet_name}")
-          deleted_count=$((deleted_count + 1))
-        else
-          warn "      ✗ Failed to delete subnet ${subnet_name}."
-        fi
-      done <<< "$subnets"
     fi
     
     # Delete VCN (last, after all dependencies are removed)
