@@ -538,43 +538,11 @@ except Exception:
     
     info "Deleting bucket: ${bucket_name}"
     
-    # First, delete all objects in the bucket
+    # First, delete all objects in the bucket (including versions)
     info "  Deleting objects in bucket..."
-    local objects_deleted=0
-    local objects
-    objects="$(run_oci os object list \
-      --bucket-name "$bucket_name" \
-      --namespace-name "$namespace" \
-      --all \
-      --output json 2>/dev/null | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin).get('data', {}).get('objects', [])
-    for obj in data:
-        name = obj.get('name') or ''
-        if name:
-            print(name)
-except Exception:
-    pass
-" 2>/dev/null || true)"
     
-    if [[ -n "$objects" ]]; then
-      while IFS= read -r object_name; do
-        [[ -z "$object_name" ]] && continue
-        if run_oci os object delete \
-          --bucket-name "$bucket_name" \
-          --namespace-name "$namespace" \
-          --object-name "$object_name" \
-          --force >/dev/null 2>&1; then
-          objects_deleted=$((objects_deleted + 1))
-        fi
-      done <<< "$objects"
-      if [[ $objects_deleted -gt 0 ]]; then
-        info "    ✓ Deleted ${objects_deleted} object(s)"
-      fi
-    fi
-    
-    # Also delete object versions if versioning is enabled
+    # Delete object versions first (if versioning is enabled)
+    local versions_deleted=0
     local versions
     versions="$(run_oci os object list \
       --bucket-name "$bucket_name" \
@@ -595,7 +563,6 @@ except Exception:
 " 2>/dev/null || true)"
     
     if [[ -n "$versions" ]]; then
-      local versions_deleted=0
       while IFS='|' read -r object_name version_id; do
         [[ -z "$object_name" ]] || [[ -z "$version_id" ]] && continue
         if run_oci os object delete \
@@ -612,6 +579,75 @@ except Exception:
       fi
     fi
     
+    # Delete current objects (may need multiple passes if there are many objects)
+    local objects_deleted=0
+    local total_objects=0
+    local pass=1
+    local max_passes=10
+    
+    while [[ $pass -le $max_passes ]]; do
+      local objects
+      objects="$(run_oci os object list \
+        --bucket-name "$bucket_name" \
+        --namespace-name "$namespace" \
+        --all \
+        --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', {}).get('objects', [])
+    for obj in data:
+        name = obj.get('name') or ''
+        if name:
+            print(name)
+except Exception:
+    pass
+" 2>/dev/null || true)"
+      
+      if [[ -z "$objects" ]]; then
+        break  # No more objects
+      fi
+      
+      if [[ $pass -eq 1 ]]; then
+        total_objects=$(echo "$objects" | wc -l | tr -d ' ')
+        if [[ $total_objects -gt 0 ]]; then
+          info "    Found ${total_objects} object(s) to delete"
+        fi
+      fi
+      
+      local pass_deleted=0
+      while IFS= read -r object_name; do
+        [[ -z "$object_name" ]] && continue
+        if run_oci os object delete \
+          --bucket-name "$bucket_name" \
+          --namespace-name "$namespace" \
+          --object-name "$object_name" \
+          --force >/dev/null 2>&1; then
+          objects_deleted=$((objects_deleted + 1))
+          pass_deleted=$((pass_deleted + 1))
+        else
+          warn "      Failed to delete object: ${object_name}"
+        fi
+      done <<< "$objects"
+      
+      if [[ $pass_deleted -eq 0 ]]; then
+        break  # No progress, stop trying
+      fi
+      
+      pass=$((pass + 1))
+      sleep 1  # Brief delay between passes
+    done
+    
+    if [[ $objects_deleted -gt 0 ]]; then
+      info "    ✓ Deleted ${objects_deleted} object(s) in ${pass} pass(es)"
+    elif [[ $total_objects -eq 0 && $versions_deleted -eq 0 ]]; then
+      info "    Bucket is empty"
+    fi
+    
+    # Wait a moment for deletions to propagate
+    if [[ $objects_deleted -gt 0 || $versions_deleted -gt 0 ]]; then
+      sleep 2
+    fi
+    
     # Now delete the bucket itself
     if run_oci os bucket delete \
       --bucket-name "$bucket_name" \
@@ -621,7 +657,26 @@ except Exception:
       deleted_resources+=("Bucket: ${bucket_name}")
       deleted_count=$((deleted_count + 1))
     else
-      warn "  ✗ Failed to delete bucket ${bucket_name}."
+      # Check if bucket still has objects
+      local remaining_objects
+      remaining_objects="$(run_oci os object list \
+        --bucket-name "$bucket_name" \
+        --namespace-name "$namespace" \
+        --all \
+        --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', {}).get('objects', [])
+    print(len(data))
+except Exception:
+    print(0)
+" 2>/dev/null || echo "0")"
+      
+      if [[ "$remaining_objects" != "0" ]]; then
+        warn "  ✗ Failed to delete bucket ${bucket_name}. Bucket still contains ${remaining_objects} object(s)."
+      else
+        warn "  ✗ Failed to delete bucket ${bucket_name}. Check permissions or bucket policies."
+      fi
     fi
   done <<< "$buckets"
   
