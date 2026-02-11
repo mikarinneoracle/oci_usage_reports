@@ -940,6 +940,7 @@ ocir_login_cloud_shell() {
   
   # 5) Login to OCIR with format: namespace/domain/username and auth token (try initially, then retry up to 2 more times)
   local attempt login_err tmp_login
+  info "Debug: Temporary auth token value: ${token_value}"
   for attempt in 1 2 3; do
     info "Logging in to OCIR (${host}) with username '${user}' (attempt ${attempt}/3)..."
     info "Command: ${CONTAINER_CMD} login ${host} -u '${user}' -p '***'"
