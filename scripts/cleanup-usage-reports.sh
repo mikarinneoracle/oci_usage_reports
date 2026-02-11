@@ -857,7 +857,7 @@ main() {
     error "Could not detect tenancy OCID from OCI CLI config. Please ensure 'tenancy=' is set in your OCI CLI profile."
   fi
   
-  # Get compartment
+  # Get compartment with retry loop
   local compartment_name compartment_id
   while true; do
     compartment_name="$(prompt_default 'Enter compartment name' "${COMPARTMENT_NAME:-}")"
@@ -865,14 +865,18 @@ main() {
       warn "Compartment name cannot be empty."
       continue
     fi
+    
+    info "Resolving compartment '${compartment_name}'..."
+    compartment_id="$(get_compartment_id "$compartment_name" "$tenancy_ocid" || true)"
+    if [[ -z "$compartment_id" ]]; then
+      warn "Could not find compartment with name '${compartment_name}' under tenancy '${tenancy_ocid}'."
+      if ! confirm "Try again with a different compartment name?" "y"; then
+        error "Compartment resolution cancelled."
+      fi
+      continue
+    fi
     break
   done
-  
-  info "Resolving compartment '${compartment_name}'..."
-  compartment_id="$(get_compartment_id "$compartment_name" "$tenancy_ocid" || true)"
-  if [[ -z "$compartment_id" ]]; then
-    error "Could not find compartment with name '${compartment_name}' under tenancy '${tenancy_ocid}'. Check the name."
-  fi
   
   compartment_name="$(run_oci iam compartment get --compartment-id "$compartment_id" --query 'data.name' --raw-output 2>/dev/null || true)"
   info "Using compartment: ${compartment_name:-$compartment_id}"
