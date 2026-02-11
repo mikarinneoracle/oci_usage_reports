@@ -886,7 +886,7 @@ ocir_login_cloud_shell() {
     fi
   done
   
-  desc="$(prompt_default 'Enter description for new OCIR auth token' "${OCIR_TOKEN_DESCRIPTION:-oci-usage-reports-ocir-token}")"
+  desc="oci-usage-reports-ocir-token-temp"
   
   info "Creating OCIR auth token via OCI CLI..."
   local token_create_output token_id token_value

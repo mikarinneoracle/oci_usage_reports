@@ -96,7 +96,9 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 2. **Region, namespace, bucket** – Prompts for OCI region, OCIR namespace, and target bucket name for copyusagereport.
 3. **Architecture** – Select x86 or arm for prebuilt images and app shape.
 4. **Functions application** – Asks for compartment and app name; creates a new VCN with private subnet (and Service Gateway + route for OCIR) or lets you pick an existing subnet, then creates the OCI Functions application.
-5. **OCIR auth (optional)** – Option to create an OCIR auth token; user OCID default comes from CLI config. If a token is just generated, it is used automatically for the next Docker login.
+5. **OCIR auth** – Authentication method depends on where you run the installer:
+   - **Cloud Shell**: Prompts for OCIR username and identity domain, creates a temporary auth token, logs in with username/token, and automatically deletes the token after successful image push.
+   - **Localhost**: Uses OCI CLI-based authentication with a short-lived bearer token (no username/token needed).
 6. **Docker** – Logs in to OCIR, pulls prebuilt images, tags and pushes them to your OCIR repo.
 7. **Bucket** – Ensures the target Object Storage bucket exists in the app’s compartment (creates it if missing).
 8. **Secret and PAR** – Asks for a secret (optional; used for cross-tenancy and xtenancycheck). If given, offers: create a new PAR (with TTL in days), use an existing PAR URL, or skip. PAR URL is stored in copyusagereport config.

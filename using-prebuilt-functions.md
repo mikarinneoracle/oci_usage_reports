@@ -37,13 +37,18 @@ Pull images from Docker Hub, tag for OCIR, and push to your registry. Then creat
 
 You can run these commands locally or in **OCI Cloud Shell** (accessible from the OCI Console header). Cloud Shell has Docker pre-installed and is already authenticated to your tenancy.
 
+**OCIR Authentication:**
+- **Cloud Shell**: Uses username and temporary auth token. The installer creates a temporary token, uses it for login/push, then deletes it automatically.
+- **Localhost**: Uses OCI CLI-based authentication with a short-lived bearer token (no username/token needed).
+
 ```bash
 # Login to Docker Hub (if needed)
 docker login
 
 # Login to OCIR
-docker login <region-key>.ocir.io
-# Use: <tenancy-namespace>/<username>, Auth Token as password
+# Cloud Shell: docker login <region-key>.ocir.io -u '<tenancy-namespace>/<domain>/<username>' -p '<auth-token>'
+# Localhost: docker login <region-key>.ocir.io -u BEARER_TOKEN -p '<short-lived-token>'
+# (The installer handles this automatically)
 
 # copyusagereport
 docker pull mikarinneoracle/oci-copy-usage-report:x86
