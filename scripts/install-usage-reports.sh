@@ -991,6 +991,203 @@ confirm() {
   esac
 }
 
+setup_dynamic_group_and_policies() {
+  # Setup dynamic group and IAM policies for Functions Resource Principal authentication
+  if ! confirm "Set up IAM dynamic group and policies automatically?" "y"; then
+    info "Skipping dynamic group and policy setup. You will need to create them manually."
+    return 0
+  fi
+
+  # Get app compartment ID
+  local app_compartment_id app_compartment_name
+  app_compartment_id="$(run_oci fn application get --application-id "$FN_APP_ID" --query 'data."compartment-id"' --raw-output 2>/dev/null || true)"
+  if [[ -z "$app_compartment_id" || "$app_compartment_id" == "null" ]]; then
+    warn "Could not determine Functions application compartment. Skipping dynamic group setup."
+    return 0
+  fi
+  
+  app_compartment_name="$(run_oci iam compartment get --compartment-id "$app_compartment_id" --query 'data.name' --raw-output 2>/dev/null || true)"
+
+  # Get tenancy OCID
+  local tenancy_ocid
+  tenancy_ocid="$(detect_tenancy_ocid || true)"
+  [[ -z "$tenancy_ocid" ]] && error "Could not detect tenancy OCID."
+
+  # Get region key
+  local region_key
+  region_key="$(run_oci iam region list --query 'data[?contains(name, `"is-home-region"`) == `true`].name | [0]' --raw-output 2>/dev/null || true)"
+  if [[ -z "$region_key" ]]; then
+    region_key="$(run_oci iam region-subscription list --query 'data[?is-home-region == `true`].region-name | [0]' --raw-output 2>/dev/null || true)"
+  fi
+  [[ -z "$region_key" ]] && warn "Could not determine region key; using default."
+
+  # Select identity domain (similar to ocir_login_cloud_shell)
+  local domains_array domain_segment domain_segment_lower i n custom_opt domain_choice
+  domains_array=()
+  while IFS= read -r line; do
+    line="$(printf '%s' "$line" | tr -d '[:space:]')"
+    [[ -z "$line" ]] && continue
+    [[ "$line" == "[]" || "$line" == "null" ]] && continue
+    domains_array+=("$line")
+  done < <(list_identity_domain_names "${tenancy_ocid}" "${region_key}" 2>/dev/null || true)
+  
+  if [[ ${#domains_array[@]} -gt 0 ]]; then
+    info "Select identity domain for dynamic group matching rule:"
+    n=0
+    for i in "${domains_array[@]}"; do
+      [[ -z "$i" ]] && continue
+      n=$((n + 1))
+      echo "  ${n}) ${i}"
+    done
+    custom_opt=$((n + 1))
+    echo "  ${custom_opt}) Custom domain"
+    while true; do
+      domain_choice="$(prompt_default 'Enter choice' '1')"
+      if [[ "$domain_choice" == "$custom_opt" ]] || [[ "$domain_choice" == "custom" ]] || [[ "$domain_choice" == "Custom" ]]; then
+        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
+        break
+      fi
+      if [[ "$domain_choice" =~ ^[0-9]+$ ]] && [[ "$domain_choice" -ge 1 ]] && [[ "$domain_choice" -le "$n" ]]; then
+        domain_segment="${domains_array[$((domain_choice - 1))]}"
+        break
+      fi
+      warn "Invalid choice. Enter 1-${n} for a domain or ${custom_opt} for custom."
+    done
+  else
+    info "Select identity domain for dynamic group matching rule:"
+    echo "  1) oracleidentitycloudservice (default for IDCS-backed tenancies)"
+    echo "  2) Custom domain"
+    domain_choice="$(prompt_default 'Enter choice' '1')"
+    case "$domain_choice" in
+      1|"")
+        domain_segment="oracleidentitycloudservice"
+        ;;
+      2)
+        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
+        ;;
+      *)
+        warn "Unknown choice '${domain_choice}', defaulting to 'oracleidentitycloudservice'."
+        domain_segment="oracleidentitycloudservice"
+        ;;
+    esac
+  fi
+  
+  domain_segment_lower="$(printf '%s' "$domain_segment" | tr '[:upper:]' '[:lower:]')"
+
+  # Dynamic group name from .env
+  local dyn_group_name="${DYN_GROUP_NAME:-oci-usage-reports-dyn-group}"
+  
+  # Create dynamic group matching rule: match functions in the app compartment with the selected domain
+  local matching_rule
+  matching_rule="ALL {resource.type = 'fnfunc', resource.compartment.id = '${app_compartment_id}'}"
+  
+  info "Creating dynamic group '${dyn_group_name}' in root compartment..."
+  local dyn_group_id dyn_group_output
+  dyn_group_output="$(run_oci iam dynamic-group create \
+    --compartment-id "$tenancy_ocid" \
+    --name "$dyn_group_name" \
+    --description "Dynamic group for OCI Usage Reports Functions (Resource Principal)" \
+    --matching-rule "$matching_rule" \
+    --output json 2>/dev/null || true)"
+  
+  if [[ -n "$dyn_group_output" ]]; then
+    dyn_group_id="$(echo "$dyn_group_output" | jq -r '.data.id // empty' 2>/dev/null || true)"
+    if [[ -n "$dyn_group_id" && "$dyn_group_id" != "null" ]]; then
+      info "Dynamic group '${dyn_group_name}' created (OCID: ${dyn_group_id})."
+    else
+      # Check if it already exists
+      local existing_dyn_group
+      existing_dyn_group="$(run_oci iam dynamic-group list --compartment-id "$tenancy_ocid" --name "$dyn_group_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+      if [[ -n "$existing_dyn_group" && "$existing_dyn_group" != "null" ]]; then
+        dyn_group_id="$existing_dyn_group"
+        info "Dynamic group '${dyn_group_name}' already exists (OCID: ${dyn_group_id})."
+      else
+        warn "Failed to create or find dynamic group '${dyn_group_name}'. Check permissions."
+        return 0
+      fi
+    fi
+  else
+    # Check if it already exists
+    local existing_dyn_group
+    existing_dyn_group="$(run_oci iam dynamic-group list --compartment-id "$tenancy_ocid" --name "$dyn_group_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+    if [[ -n "$existing_dyn_group" && "$existing_dyn_group" != "null" ]]; then
+      dyn_group_id="$existing_dyn_group"
+      info "Dynamic group '${dyn_group_name}' already exists (OCID: ${dyn_group_id})."
+    else
+      warn "Failed to create dynamic group '${dyn_group_name}'. Check permissions."
+      return 0
+    fi
+  fi
+
+  # Create policies in app compartment
+  info "Creating IAM policies in compartment '${app_compartment_name:-$app_compartment_id}'..."
+  
+  local policy_name="oci-usage-reports-policy"
+  local policy_statements=(
+    "Allow dynamic-group ${dyn_group_name} to manage objects in compartment ${app_compartment_name:-id=${app_compartment_id}}"
+    "Allow dynamic-group ${dyn_group_name} to read objectstorage-namespace in compartment ${app_compartment_name:-id=${app_compartment_id}}"
+  )
+  
+  # Create policy statements JSON
+  local statements_json="["
+  local first=true
+  for stmt in "${policy_statements[@]}"; do
+    if [[ "$first" == "true" ]]; then
+      first=false
+    else
+      statements_json+=","
+    fi
+    statements_json+="\"${stmt}\""
+  done
+  statements_json+="]"
+  
+  local policy_output
+  policy_output="$(run_oci iam policy create \
+    --compartment-id "$app_compartment_id" \
+    --name "$policy_name" \
+    --description "IAM policies for OCI Usage Reports Functions" \
+    --statements "$statements_json" \
+    --output json 2>/dev/null || true)"
+  
+  if [[ -n "$policy_output" ]]; then
+    local policy_id
+    policy_id="$(echo "$policy_output" | jq -r '.data.id // empty' 2>/dev/null || true)"
+    if [[ -n "$policy_id" && "$policy_id" != "null" ]]; then
+      info "Policy '${policy_name}' created (OCID: ${policy_id})."
+    else
+      # Check if it already exists
+      local existing_policy
+      existing_policy="$(run_oci iam policy list --compartment-id "$app_compartment_id" --name "$policy_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+      if [[ -n "$existing_policy" && "$existing_policy" != "null" ]]; then
+        info "Policy '${policy_name}' already exists (OCID: ${existing_policy})."
+      else
+        warn "Failed to create policy '${policy_name}'. Check permissions."
+      fi
+    fi
+  else
+    # Check if it already exists
+    local existing_policy
+    existing_policy="$(run_oci iam policy list --compartment-id "$app_compartment_id" --name "$policy_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+    if [[ -n "$existing_policy" && "$existing_policy" != "null" ]]; then
+      info "Policy '${policy_name}' already exists (OCID: ${existing_policy})."
+    else
+      warn "Failed to create policy '${policy_name}'. Check permissions."
+    fi
+  fi
+  
+  # Show summary
+  echo
+  info "Dynamic group and policies setup summary:"
+  info "  Dynamic Group: ${dyn_group_name} (OCID: ${dyn_group_id})"
+  info "    Matching Rule: ${matching_rule}"
+  info "  Policy: ${policy_name} in compartment '${app_compartment_name:-$app_compartment_id}'"
+  info "    Statements:"
+  for stmt in "${policy_statements[@]}"; do
+    info "      - ${stmt}"
+  done
+  echo
+}
+
 install_prebuilt_with_fn() {
   local region_key namespace repo_name app_name bucket_name secret par_url tenancy_ocid days arch arch_tag
   par_url=""
@@ -1351,6 +1548,9 @@ install_prebuilt_with_fn() {
   else
     warn "Secret is empty; xtenancycheck will not be deployed or validated."
   fi
+
+  # Setup dynamic group and IAM policies
+  setup_dynamic_group_and_policies
 
   # Optional post-deploy test
   if confirm "Run a quick test of the deployed functions now?" "y"; then
