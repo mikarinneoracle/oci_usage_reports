@@ -277,13 +277,57 @@ delete_ocir_repos() {
   local repo_pattern="${OCIR_REPO_NAME:-oci-usage-reports}"
   repo_pattern="$(printf '%s' "$repo_pattern" | tr '[:upper:]' '[:lower:]')"  # Convert to lowercase
   
-  info "Searching for OCIR repositories with name matching '${repo_pattern}*'..."
+  info "Searching for OCIR repositories with name matching '${repo_pattern}*' in compartment and sub-compartments..."
   
+  # Get tenancy OCID for recursive compartment search
+  local tenancy_ocid
+  tenancy_ocid="$(detect_tenancy_ocid || true)"
+  
+  # Get all compartments including the specified one and all its sub-compartments
+  local all_compartments
+  if [[ -n "$tenancy_ocid" ]]; then
+    all_compartments="$(run_oci iam compartment list \
+      --compartment-id "$tenancy_ocid" \
+      --compartment-id-in-subtree true \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+target_comp_id = '${compartment_id}'
+try:
+    data = json.load(sys.stdin).get('data', [])
+    compartments = [target_comp_id]  # Always include the specified compartment
+    # Find all sub-compartments of the target compartment
+    for comp in data:
+        comp_id = comp.get('id') or ''
+        parent_id = comp.get('compartment-id') or ''
+        # If this compartment's parent is the target, or if it's the target itself
+        if parent_id == target_comp_id or comp_id == target_comp_id:
+            compartments.append(comp_id)
+    # Remove duplicates and print (target compartment first)
+    seen = set()
+    print(target_comp_id)  # Print target first
+    seen.add(target_comp_id)
+    for comp_id in compartments:
+        if comp_id and comp_id not in seen:
+            print(comp_id)
+            seen.add(comp_id)
+except Exception:
+    print('${compartment_id}')  # Fallback to just the specified compartment
+" 2>/dev/null || echo "$compartment_id")"
+  else
+    all_compartments="$compartment_id"
+  fi
+  
+  # Search for repositories in all compartments
   local repos
-  repos="$(run_oci artifacts container repository list \
-    --compartment-id "$compartment_id" \
-    --all \
-    --output json 2>/dev/null | python3 -c "
+  repos=""
+  while IFS= read -r comp_id; do
+    [[ -z "$comp_id" ]] && continue
+    local comp_repos
+    comp_repos="$(run_oci artifacts container repository list \
+      --compartment-id "$comp_id" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
 import sys, json
 pattern = '${repo_pattern}'.lower()
 try:
@@ -295,6 +339,14 @@ try:
 except Exception:
     pass
 " 2>/dev/null || true)"
+    if [[ -n "$comp_repos" ]]; then
+      if [[ -z "$repos" ]]; then
+        repos="$comp_repos"
+      else
+        repos="${repos}"$'\n'"${comp_repos}"
+      fi
+    fi
+  done <<< "$all_compartments"
   
   if [[ -z "$repos" ]]; then
     info "No OCIR repositories found with name matching '${repo_pattern}*'."
