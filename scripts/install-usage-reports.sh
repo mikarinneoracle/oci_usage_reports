@@ -1329,7 +1329,6 @@ install_prebuilt_with_fn() {
       # Logout first to clear any stale credentials
       "${CONTAINER_CMD}" logout "${region_key}.ocir.io" 2>/dev/null || true
       ocir_login "${region_key}" "${namespace}" || { echo "$push_out" >&2; return 1; }
-      sleep 60
       info "Retrying push: $img"
       if "${CONTAINER_CMD}" push "$img" 2>&1 | tee "$tmp"; then
         rm -f "$tmp"
