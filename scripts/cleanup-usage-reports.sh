@@ -681,6 +681,7 @@ except Exception:
     
     # First, delete all objects in the bucket
     info "  Listing objects in bucket..."
+    info "    Command: oci os object list --bucket-name '${bucket_name}' --namespace-name '${namespace}' --all --output json"
     local objects_deleted=0
     local objects
     local list_error
@@ -689,21 +690,48 @@ except Exception:
       --namespace-name "$namespace" \
       --all \
       --output json 2>&1)"
+    local list_exit_code=$?
     
-    if [[ $? -ne 0 ]]; then
+    info "    Exit code: ${list_exit_code}"
+    if [[ ${list_exit_code} -ne 0 ]]; then
       warn "    Failed to list objects: ${list_error}"
     else
+      # Show raw JSON for debugging (first 500 chars)
+      local json_preview
+      json_preview="$(echo "$list_error" | head -c 500)"
+      info "    JSON preview: ${json_preview}..."
+      
       objects="$(echo "$list_error" | python3 -c "
 import sys, json
 try:
-    data = json.load(sys.stdin).get('data', {}).get('objects', [])
-    for obj in data:
-        name = obj.get('name') or ''
+    data = json.load(sys.stdin)
+    # Try different possible structures
+    obj_list = []
+    if isinstance(data, dict):
+        if 'data' in data:
+            if isinstance(data['data'], dict) and 'objects' in data['data']:
+                obj_list = data['data']['objects']
+            elif isinstance(data['data'], list):
+                obj_list = data['data']
+        elif 'objects' in data:
+            obj_list = data['objects']
+    elif isinstance(data, list):
+        obj_list = data
+    
+    for obj in obj_list:
+        name = obj.get('name') or obj.get('display-name') or ''
         if name:
             print(name)
 except Exception as e:
+    sys.stderr.write(f'Error parsing JSON: {e}\n')
     pass
-" 2>/dev/null || true)"
+" 2>&1)"
+      
+      local parse_error
+      parse_error="$(echo "$objects" | grep -i "error" || true)"
+      if [[ -n "$parse_error" ]]; then
+        warn "    JSON parsing error: ${parse_error}"
+      fi
       
       if [[ -n "$objects" ]]; then
         local object_count
