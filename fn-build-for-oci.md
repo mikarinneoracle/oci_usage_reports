@@ -47,7 +47,7 @@ fn update context registry <region-key>.ocir.io/<tenancy-namespace>
 Ensure Docker is logged in to OCIR:
 
 **OCIR Authentication:**
-- **Cloud Shell**: Uses username and temporary auth token. Create an auth token in OCI Console, then login with: `docker login <region-key>.ocir.io -u '<tenancy-namespace>/<domain>/<username>' -p '<auth-token>'`
+- **Cloud Shell**: Uses username and manually created auth token. Create an auth token in your user profile in the OCI Console, then login with: `docker login <region-key>.ocir.io -u '<tenancy-namespace>/<domain>/<username>' -p '<auth-token>'`. If login fails immediately, wait 60 seconds and retry (token propagation delay).
 - **Localhost**: Uses OCI CLI-based authentication with a short-lived bearer token: `docker login <region-key>.ocir.io -u BEARER_TOKEN -p '<token>'` (token obtained via `oci raw-request`)
 
 ```bash

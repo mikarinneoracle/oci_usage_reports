@@ -97,7 +97,7 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 3. **Architecture** – Select x86 or arm for prebuilt images and app shape.
 4. **Functions application** – Asks for compartment and app name; creates a new VCN with private subnet (and Service Gateway + route for OCIR) or lets you pick an existing subnet, then creates the OCI Functions application.
 5. **OCIR auth** – Authentication method depends on where you run the installer:
-   - **Cloud Shell**: Prompts for OCIR username and identity domain, creates a temporary auth token, logs in with username/token, and automatically deletes the token after successful image push.
+   - **Cloud Shell**: Prompts if you want to login to OCIR (default: no). If yes, prompts for OCIR username and identity domain, then asks you to manually create an auth token in your user profile and enter it. The script attempts login immediately; if it fails, waits 60 seconds and retries up to 2 more times.
    - **Localhost**: Uses OCI CLI-based authentication with a short-lived bearer token (no username/token needed).
 6. **Docker** – Logs in to OCIR, pulls prebuilt images, tags and pushes them to your OCIR repo.
 7. **Bucket** – Ensures the target Object Storage bucket exists in the app’s compartment (creates it if missing).
