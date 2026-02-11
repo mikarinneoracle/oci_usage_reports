@@ -23,6 +23,11 @@ if [[ -f "${SCRIPT_DIR}/.env" ]] && [[ -r "${SCRIPT_DIR}/.env" ]]; then
   set -u
 fi
 
+# Display version at startup
+if [[ -n "${VERSION:-}" ]]; then
+  echo "[INFO]  Installer version: ${VERSION}"
+fi
+
 # Global OCI CLI config context (set by setup_oci_cli_context)
 OCI_CLI_CONFIG_PATH=""
 OCI_CLI_PROFILE_NAME=""
