@@ -319,22 +319,26 @@ create_functions_application() {
       warn "Compartment name cannot be empty."
       continue
     fi
+    
+    info "Resolving compartment '${compartment_name}'..."
+    compartment_id="$(
+      run_oci iam compartment list \
+        --compartment-id "$tenancy_ocid" \
+        --compartment-id-in-subtree true \
+        --all \
+        --query "data[?\"name\"=='${compartment_name}'].id | [0]" \
+        --raw-output 2>/dev/null || true
+    )"
+
+    if [[ -z "$compartment_id" || "$compartment_id" == "null" ]]; then
+      warn "Could not find compartment with name '${compartment_name}' under tenancy '${tenancy_ocid}'."
+      if ! confirm "Try again with a different compartment name?" "y"; then
+        error "Compartment resolution cancelled."
+      fi
+      continue
+    fi
     break
   done
-
-  info "Resolving compartment '${compartment_name}'..."
-  compartment_id="$(
-    run_oci iam compartment list \
-      --compartment-id "$tenancy_ocid" \
-      --compartment-id-in-subtree true \
-      --all \
-      --query "data[?\"name\"=='${compartment_name}'].id | [0]" \
-      --raw-output 2>/dev/null || true
-  )"
-
-  if [[ -z "$compartment_id" || "$compartment_id" == "null" ]]; then
-    error "Could not find compartment with name '${compartment_name}' under tenancy '${tenancy_ocid}'."
-  fi
 
   # Prompt for Functions application name after resolving compartment and ensure it does not already exist there.
   while true; do
