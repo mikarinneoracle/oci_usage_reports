@@ -36,6 +36,13 @@ Both functions run as **Resource Principal** by default when deployed to Oracle 
 1. **Dynamic Group**: Create a dynamic group that includes your function
 2. **IAM Policies**: Grant the dynamic group Object Storage and namespace permissions
 
+**The scripted installer automatically sets up the dynamic group and IAM policies** (step 11). When prompted, it will:
+- Create a dynamic group in the root compartment matching all functions in your application compartment
+- Create IAM policies in the application compartment granting Object Storage access
+- Show a summary of created resources
+
+If you skip automatic setup or deploy manually, you'll need to create these resources yourself. See the IAM Policies sections in [Using Prebuilt Functions](using-prebuilt-functions.md#iam-policies-dynamic-group) or [Fn Build for OCI](fn-build-for-oci.md#iam-policies-dynamic-group) for manual setup instructions.
+
 For local development, both functions can be built using the `build-local.sh` script in each function's directory, which uses user CLI config for IAM credentials (instead of Resource Principal).
 
 ## Deployment Scenarios
@@ -104,6 +111,7 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 | `VCN_CIDR` | VCN CIDR when creating a new VCN | `10.0.0.0/16` |
 | `SUBNET_CIDR` | Subnet CIDR when creating a new VCN | `10.0.1.0/24` |
 | `PAR_TTL_DAYS` | PAR validity in days when creating a new PAR | `365` |
+| `DYN_GROUP_NAME` | Dynamic group name for IAM policies | `oci-usage-reports-dyn-group` |
 
 ### What the installer does (briefly)
 
@@ -119,7 +127,8 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 8. **Secret and PAR** – Asks for a secret (optional; used for cross-tenancy and xtenancycheck). If given, offers: create a new PAR (with TTL in days), use an existing PAR URL, or skip. PAR URL is stored in copyusagereport config.
 9. **copyusagereport** – Creates the function with config (bucket, days, optional secret and `x-tenancy_par`).
 10. **xtenancycheck (optional)** – If a secret was set, offers to deploy xtenancycheck with the same secret.
-11. **Quick test (optional)** – Can invoke copyusagereport and run a short xtenancycheck test (upload/delete object with secret prefix).
+11. **Dynamic group and IAM policies** – Prompts to set up automatically (default: yes). Creates a dynamic group in root compartment matching functions in the app compartment, and IAM policies in the app compartment for Object Storage access. Shows summary of created resources.
+12. **Quick test (optional)** – Can invoke copyusagereport and run a short xtenancycheck test (upload/delete object with secret prefix).
 
 After deployment, schedule **copyusagereport** (e.g. via OCI Resource Scheduler) and attach **xtenancycheck** to the bucket’s Object Storage events (see [Deployment Scenarios](#deployment-scenarios) and the linked docs).
 

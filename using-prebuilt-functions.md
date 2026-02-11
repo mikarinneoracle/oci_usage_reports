@@ -252,7 +252,9 @@ The event delivers object metadata (namespace, bucket, object name) to the funct
 
 ## IAM Policies (Dynamic Group)
 
-Both functions use Resource Principal in OCI. Create a dynamic group that includes your function and grant it these policies:
+Both functions use Resource Principal in OCI. **If you use the scripted installer**, it will automatically create the dynamic group and IAM policies for you (see [Scripted Install](../README.md#scripted-install-recommended)).
+
+For manual deployment, create a dynamic group that includes your function and grant it these policies:
 
 **For copyusagereport and xtenancycheck** (general Object Storage access):
 
