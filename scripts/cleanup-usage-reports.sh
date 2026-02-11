@@ -736,22 +736,24 @@ except Exception as e:
     fi
     
     # Also delete object versions if versioning is enabled
-    info "  Listing object versions..."
-    local versions
-    local versions_error
-    local versions_exit_code
-    versions_error="$(run_oci os object list \
-      --bucket-name "$bucket_name" \
-      --namespace-name "$namespace" \
-      --all \
-      --versions \
-      --output json 2>&1)"
-    versions_exit_code=$?
+    # Only check for versions if we found objects (to avoid hanging on empty buckets)
+    if [[ $objects_deleted -gt 0 || -n "$objects" ]]; then
+      info "  Listing object versions..."
+      local versions
+      local versions_error
+      local versions_exit_code
+      versions_error="$(run_oci os object list \
+        --bucket-name "$bucket_name" \
+        --namespace-name "$namespace" \
+        --all \
+        --versions \
+        --output json 2>&1)"
+      versions_exit_code=$?
     
-    if [[ $versions_exit_code -ne 0 ]]; then
-      warn "    Failed to list object versions: ${versions_error}"
-    else
-      versions="$(echo "$versions_error" | python3 -c "
+      if [[ $versions_exit_code -ne 0 ]]; then
+        warn "    Failed to list object versions: ${versions_error}"
+      else
+        versions="$(echo "$versions_error" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin).get('data', {}).get('objects', [])
@@ -763,33 +765,36 @@ try:
 except Exception:
     pass
 " 2>/dev/null || true)"
-      
-      if [[ -n "$versions" ]]; then
-        local version_count
-        version_count="$(echo "$versions" | wc -l | tr -d ' ')"
-        info "    Found ${version_count} object version(s) to delete..."
-        local versions_deleted=0
-        while IFS='|' read -r object_name version_id; do
-          [[ -z "$object_name" ]] || [[ -z "$version_id" ]] && continue
-          local delete_err
-          delete_err="$(run_oci os object delete \
-            --bucket-name "$bucket_name" \
-            --namespace-name "$namespace" \
-            --object-name "$object_name" \
-            --version-id "$version_id" \
-            --force 2>&1)"
-          if [[ $? -eq 0 ]]; then
-            versions_deleted=$((versions_deleted + 1))
-          else
-            warn "      Failed to delete version '${object_name}' (${version_id}): ${delete_err}"
+        
+        if [[ -n "$versions" ]]; then
+          local version_count
+          version_count="$(echo "$versions" | wc -l | tr -d ' ')"
+          info "    Found ${version_count} object version(s) to delete..."
+          local versions_deleted=0
+          while IFS='|' read -r object_name version_id; do
+            [[ -z "$object_name" ]] || [[ -z "$version_id" ]] && continue
+            local delete_err
+            delete_err="$(run_oci os object delete \
+              --bucket-name "$bucket_name" \
+              --namespace-name "$namespace" \
+              --object-name "$object_name" \
+              --version-id "$version_id" \
+              --force 2>&1)"
+            if [[ $? -eq 0 ]]; then
+              versions_deleted=$((versions_deleted + 1))
+            else
+              warn "      Failed to delete version '${object_name}' (${version_id}): ${delete_err}"
+            fi
+          done <<< "$versions"
+          if [[ $versions_deleted -gt 0 ]]; then
+            info "    ✓ Deleted ${versions_deleted} object version(s)"
           fi
-        done <<< "$versions"
-        if [[ $versions_deleted -gt 0 ]]; then
-          info "    ✓ Deleted ${versions_deleted} object version(s)"
+        else
+          info "    No object versions found"
         fi
-      else
-        info "    No object versions found"
       fi
+    else
+      info "  Skipping version check (bucket appears empty)"
     fi
     
     # Verify bucket is empty before attempting deletion
