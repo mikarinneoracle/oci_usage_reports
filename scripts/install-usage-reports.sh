@@ -888,7 +888,7 @@ ocir_login_cloud_shell() {
   
   desc="oci-usage-reports-ocir-token-temp"
   
-  info "Creating OCIR auth token via OCI CLI..."
+  info "Creating temporary OCIR auth token via OCI CLI to user's profile..."
   local token_create_output token_id token_value
   token_create_output="$(oci iam auth-token create \
       --user-id "$user_ocid" \
@@ -1160,15 +1160,39 @@ install_prebuilt_with_fn() {
         par_bucket="$(prompt_default 'Enter bucket name for PAR' "${BUCKET_NAME:-copyusagereport}")"
         [[ -z "$par_bucket" ]] && par_bucket="copyusagereport"
         bucket_name="$par_bucket"
-        info "Creating bucket-level PAR for cross-tenancy uploads (AnyObjectWrite)..."
         par_days="$(prompt_default 'Enter PAR validity in days' "${PAR_TTL_DAYS:-365}")"
         par_days="$((par_days + 0))"
         [[ "$par_days" -lt 1 ]] && par_days=365
+        
+        # Ensure bucket exists before creating PAR
+        local app_compartment_id ns_par
+        app_compartment_id="$(run_oci fn application get --application-id "$FN_APP_ID" --query 'data."compartment-id"' --raw-output 2>/dev/null || true)"
         ns_par="$(detect_default_namespace || true)"
         [[ -z "$ns_par" ]] && ns_par="$(run_oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
+        
         if [[ -z "$ns_par" ]]; then
-          warn "Could not determine Object Storage namespace; skipping PAR creation."
+          warn "Could not determine Object Storage namespace; skipping bucket check and PAR creation."
+        elif [[ -z "$app_compartment_id" || "$app_compartment_id" == "null" ]]; then
+          warn "Could not get Functions app compartment; skipping bucket check. Ensure bucket '${par_bucket}' exists before creating PAR."
         else
+          # Check if bucket exists, create if not
+          if ! run_oci os bucket get --namespace-name "$ns_par" --name "$par_bucket" >/dev/null 2>&1; then
+            info "Creating Object Storage bucket '${par_bucket}' in namespace '${ns_par}' (compartment of the Functions application)..."
+            if ! run_oci os bucket create \
+              --namespace-name "$ns_par" \
+              --compartment-id "$app_compartment_id" \
+              --name "$par_bucket" \
+              --query 'data.id' --raw-output >/dev/null 2>&1; then
+              warn "Could not create bucket '${par_bucket}'. Ensure it exists before creating PAR."
+            else
+              info "Bucket '${par_bucket}' created."
+            fi
+          else
+            info "Bucket '${par_bucket}' already exists in namespace '${ns_par}'."
+          fi
+          
+          # Create PAR after ensuring bucket exists
+          info "Creating bucket-level PAR for cross-tenancy uploads (AnyObjectWrite)..."
           par_expiry="$(python3 -c "from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(days=$par_days)).isoformat(timespec='seconds').replace('+00:00','Z'))")"
           par_name="copyusagereport-par-$(date +%Y%m%d%H%M%S)"
           access_uri="$(
@@ -1186,7 +1210,7 @@ install_prebuilt_with_fn() {
             info "PAR created for bucket '${par_bucket}' (namespace '${ns_par}'). Expires: ${par_expiry}"
             echo "PAR URL (share with the other tenancy): ${par_url}"
           else
-            warn "Failed to create PAR via OCI CLI. Create it in OCI Console or use option 2 with an existing PAR."
+            warn "Failed to create PAR via OCI CLI. Ensure bucket '${par_bucket}' exists and you have permissions. Create it in OCI Console or use option 2 with an existing PAR."
           fi
         fi
         ;;
