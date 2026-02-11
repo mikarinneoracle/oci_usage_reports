@@ -127,7 +127,32 @@ setup_oci_cli_context() {
 }
 
 detect_tenancy_ocid() {
-  run_oci iam tenancy get --query 'data.id' --raw-output 2>/dev/null || true
+  # Try to detect tenancy OCID from OCI CLI config.
+  # Uses interactive context (OCI_CLI_CONFIG_PATH / OCI_CLI_PROFILE_NAME) if set.
+  local profile config
+
+  if [[ -n "$OCI_CLI_CONFIG_PATH" && -n "$OCI_CLI_PROFILE_NAME" ]]; then
+    config="$OCI_CLI_CONFIG_PATH"
+    profile="$OCI_CLI_PROFILE_NAME"
+  else
+    profile="${OCI_CLI_PROFILE:-DEFAULT}"
+    config="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
+  fi
+
+  if [[ ! -f "$config" ]]; then
+    return 1
+  fi
+
+  awk -v prof="[$profile]" '
+    $0 == prof { in_profile=1; next }
+    /^\[/ { in_profile=0 }
+    in_profile && $0 ~ /^[[:space:]]*tenancy[[:space:]]*=/ {
+      split($0, a, "=")
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[2])
+      print a[2]
+      exit
+    }
+  ' "$config"
 }
 
 get_compartment_id() {
@@ -454,7 +479,7 @@ main() {
   local tenancy_ocid
   tenancy_ocid="$(detect_tenancy_ocid || true)"
   if [[ -z "$tenancy_ocid" ]]; then
-    error "Could not detect tenancy OCID. Ensure OCI CLI is configured."
+    error "Could not detect tenancy OCID from OCI CLI config. Please ensure 'tenancy=' is set in your OCI CLI profile."
   fi
   
   # Get compartment
