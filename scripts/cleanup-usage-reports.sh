@@ -711,20 +711,24 @@ except Exception as e:
         info "    Found ${object_count} object(s) to delete..."
         while IFS= read -r object_name; do
           [[ -z "$object_name" ]] && continue
-          local delete_err
+          local delete_err delete_exit_code
           delete_err="$(run_oci os object delete \
             --bucket-name "$bucket_name" \
             --namespace-name "$namespace" \
             --object-name "$object_name" \
             --force 2>&1)"
-          if [[ $? -eq 0 ]]; then
+          delete_exit_code=$?
+          if [[ $delete_exit_code -eq 0 ]]; then
             objects_deleted=$((objects_deleted + 1))
           else
             warn "      Failed to delete object '${object_name}': ${delete_err}"
           fi
         done <<< "$objects"
         if [[ $objects_deleted -gt 0 ]]; then
-          info "    ✓ Deleted ${objects_deleted} object(s)"
+          info "    ✓ Deleted ${objects_deleted} of ${object_count} object(s)"
+        fi
+        if [[ $objects_deleted -lt $object_count ]]; then
+          warn "    ⚠ Only deleted ${objects_deleted} of ${object_count} object(s). Some objects may still exist."
         fi
       else
         info "    Bucket is empty (no objects found)"
@@ -788,15 +792,39 @@ except Exception:
       fi
     fi
     
+    # Verify bucket is empty before attempting deletion
+    info "  Verifying bucket is empty..."
+    local remaining_check
+    remaining_check="$(run_oci os object list \
+      --bucket-name "$bucket_name" \
+      --namespace-name "$namespace" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', {}).get('objects', [])
+    print(len(data))
+except Exception:
+    print(0)
+" 2>/dev/null | tr -d '[:space:]' || echo "0")"
+    
+    remaining_check=$((remaining_check + 0))
+    if [[ $remaining_check -gt 0 ]]; then
+      warn "  ✗ Cannot delete bucket ${bucket_name}: still contains ${remaining_check} object(s)."
+      warn "    Please delete objects manually or check permissions."
+      continue
+    fi
+    
     # Now delete the bucket itself
     info "  Attempting to delete bucket..."
-    local delete_error
+    local delete_error delete_exit_code
     delete_error="$(run_oci os bucket delete \
       --bucket-name "$bucket_name" \
       --namespace-name "$namespace" \
       --force 2>&1)"
+    delete_exit_code=$?
     
-    if [[ $? -eq 0 ]]; then
+    if [[ $delete_exit_code -eq 0 ]]; then
       info "  ✓ Bucket deleted: ${bucket_name}"
       deleted_resources+=("Bucket: ${bucket_name}")
       deleted_count=$((deleted_count + 1))
