@@ -1148,7 +1148,7 @@ install_prebuilt_with_fn() {
     local img="$1"
     local push_out tmp
     tmp="$(mktemp)"
-    if "${CONTAINER_CMD}" push --no-reuse-blobs "$img" 2>&1 | tee "$tmp"; then
+    if "${CONTAINER_CMD}" push "$img" 2>&1 | tee "$tmp"; then
       rm -f "$tmp"
       return 0
     fi
@@ -1161,7 +1161,7 @@ install_prebuilt_with_fn() {
       ocir_login "${region_key}" "${namespace}" || { echo "$push_out" >&2; return 1; }
       sleep 60
       info "Retrying push: $img"
-      if "${CONTAINER_CMD}" push --no-reuse-blobs "$img" 2>&1 | tee "$tmp"; then
+      if "${CONTAINER_CMD}" push "$img" 2>&1 | tee "$tmp"; then
         rm -f "$tmp"
         return 0
       fi
@@ -1210,13 +1210,13 @@ install_prebuilt_with_fn() {
       info "${CONTAINER_CMD} login to OCIR succeeded with manual credentials."
       info "Retrying push with manual credentials..."
       if [[ "$copy_push_failed" == "true" ]]; then
-        if ! "${CONTAINER_CMD}" push --no-reuse-blobs "${registry}/oci-copy-usage-report:${arch_tag}" 2>&1; then
+        if ! "${CONTAINER_CMD}" push "${registry}/oci-copy-usage-report:${arch_tag}" 2>&1; then
           error "Failed to push oci-copy-usage-report image with manual credentials."
         fi
         info "oci-copy-usage-report pushed successfully."
       fi
       if [[ "$xten_push_failed" == "true" ]]; then
-        if ! "${CONTAINER_CMD}" push --no-reuse-blobs "${registry}/oci-xtenancy-check:${arch_tag}" 2>&1; then
+        if ! "${CONTAINER_CMD}" push "${registry}/oci-xtenancy-check:${arch_tag}" 2>&1; then
           error "Failed to push oci-xtenancy-check image with manual credentials."
         fi
         info "oci-xtenancy-check pushed successfully."
