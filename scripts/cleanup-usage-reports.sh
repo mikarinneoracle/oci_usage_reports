@@ -8,6 +8,7 @@ set -euo pipefail
 #   - Functions applications and functions with name matching "oci-usage-reports*"
 #   - OCIR repositories with name matching "oci-usage-reports*"
 #   - VCNs and subnets with name matching "oci-usage-reports*"
+#   - Object Storage buckets with name matching "copyusagereport*"
 #
 # This script uses OCI CLI authentication only (not Resource Principal).
 # Run from the repository root or scripts directory.
@@ -159,6 +160,7 @@ get_compartment_id() {
 delete_functions() {
   local compartment_id="$1"
   local deleted_count=0
+  local deleted_resources=()
   
   info "Searching for Functions applications with name matching 'oci-usage-reports*'..."
   
@@ -209,10 +211,11 @@ except Exception:
         [[ -z "$func_id" ]] && continue
         info "  Deleting function: ${func_name} (${func_id})"
         if run_oci fn function delete --function-id "$func_id" --force >/dev/null 2>&1; then
-          info "    Function deleted."
+          info "    ✓ Function deleted: ${func_name}"
+          deleted_resources+=("Function: ${func_name}")
           deleted_count=$((deleted_count + 1))
         else
-          warn "    Failed to delete function ${func_name}."
+          warn "    ✗ Failed to delete function ${func_name}."
         fi
       done <<< "$functions"
     fi
@@ -220,19 +223,27 @@ except Exception:
     # Delete application
     info "  Deleting application: ${app_name}"
     if run_oci fn application delete --application-id "$app_id" --force >/dev/null 2>&1; then
-      info "    Application deleted."
+      info "    ✓ Application deleted: ${app_name}"
+      deleted_resources+=("Application: ${app_name}")
       deleted_count=$((deleted_count + 1))
     else
-      warn "    Failed to delete application ${app_name}."
+      warn "    ✗ Failed to delete application ${app_name}."
     fi
   done <<< "$apps"
   
-  info "Deleted ${deleted_count} Functions resource(s)."
+  if [[ ${#deleted_resources[@]} -gt 0 ]]; then
+    info "Deleted Functions resources:"
+    for resource in "${deleted_resources[@]}"; do
+      info "  - ${resource}"
+    done
+  fi
+  info "Total: ${deleted_count} Functions resource(s) deleted."
 }
 
 delete_ocir_repos() {
   local compartment_id="$1"
   local deleted_count=0
+  local deleted_resources=()
   
   info "Searching for OCIR repositories with name matching 'oci-usage-reports*'..."
   
@@ -262,19 +273,27 @@ except Exception:
     
     info "Deleting repository: ${repo_name} (${repo_id})"
     if run_oci artifacts container repository delete --repository-id "$repo_id" --force >/dev/null 2>&1; then
-      info "  Repository deleted."
+      info "  ✓ Repository deleted: ${repo_name}"
+      deleted_resources+=("OCIR Repository: ${repo_name}")
       deleted_count=$((deleted_count + 1))
     else
-      warn "  Failed to delete repository ${repo_name}."
+      warn "  ✗ Failed to delete repository ${repo_name}."
     fi
   done <<< "$repos"
   
-  info "Deleted ${deleted_count} OCIR repository/repositories."
+  if [[ ${#deleted_resources[@]} -gt 0 ]]; then
+    info "Deleted OCIR repositories:"
+    for resource in "${deleted_resources[@]}"; do
+      info "  - ${resource}"
+    done
+  fi
+  info "Total: ${deleted_count} OCIR repository/repositories deleted."
 }
 
 delete_networks() {
   local compartment_id="$1"
   local deleted_count=0
+  local deleted_resources=()
   
   info "Searching for VCNs with name matching 'oci-usage-reports*'..."
   
@@ -328,10 +347,11 @@ except Exception:
         [[ -z "$subnet_id" ]] && continue
         info "  Deleting subnet: ${subnet_name} (${subnet_id})"
         if run_oci network subnet delete --subnet-id "$subnet_id" --force >/dev/null 2>&1; then
-          info "    Subnet deleted."
+          info "    ✓ Subnet deleted: ${subnet_name}"
+          deleted_resources+=("Subnet: ${subnet_name}")
           deleted_count=$((deleted_count + 1))
         else
-          warn "    Failed to delete subnet ${subnet_name}."
+          warn "    ✗ Failed to delete subnet ${subnet_name}."
         fi
       done <<< "$subnets"
     fi
@@ -339,14 +359,83 @@ except Exception:
     # Delete VCN
     info "  Deleting VCN: ${vcn_name}"
     if run_oci network vcn delete --vcn-id "$vcn_id" --force >/dev/null 2>&1; then
-      info "    VCN deleted."
+      info "    ✓ VCN deleted: ${vcn_name}"
+      deleted_resources+=("VCN: ${vcn_name}")
       deleted_count=$((deleted_count + 1))
     else
-      warn "    Failed to delete VCN ${vcn_name}."
+      warn "    ✗ Failed to delete VCN ${vcn_name}."
     fi
   done <<< "$vcns"
   
-  info "Deleted ${deleted_count} network resource(s)."
+  if [[ ${#deleted_resources[@]} -gt 0 ]]; then
+    info "Deleted network resources:"
+    for resource in "${deleted_resources[@]}"; do
+      info "  - ${resource}"
+    done
+  fi
+  info "Total: ${deleted_count} network resource(s) deleted."
+}
+
+delete_buckets() {
+  local compartment_id="$1"
+  local deleted_count=0
+  local deleted_resources=()
+  
+  # Get namespace
+  local namespace
+  namespace="$(run_oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
+  if [[ -z "$namespace" ]]; then
+    warn "Could not determine Object Storage namespace. Skipping bucket deletion."
+    return 0
+  fi
+  
+  info "Searching for Object Storage buckets with name matching 'copyusagereport*'..."
+  
+  local buckets
+  buckets="$(run_oci os bucket list \
+    --compartment-id "$compartment_id" \
+    --namespace-name "$namespace" \
+    --all \
+    --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', [])
+    for bucket in data:
+        name = bucket.get('name') or ''
+        if name.lower().startswith('copyusagereport'):
+            print(f\"{name}\")
+except Exception:
+    pass
+" 2>/dev/null || true)"
+  
+  if [[ -z "$buckets" ]]; then
+    info "No buckets found with name matching 'copyusagereport*'."
+    return 0
+  fi
+  
+  while IFS= read -r bucket_name; do
+    [[ -z "$bucket_name" ]] && continue
+    
+    info "Deleting bucket: ${bucket_name}"
+    if run_oci os bucket delete \
+      --bucket-name "$bucket_name" \
+      --namespace-name "$namespace" \
+      --force >/dev/null 2>&1; then
+      info "  ✓ Bucket deleted: ${bucket_name}"
+      deleted_resources+=("Bucket: ${bucket_name}")
+      deleted_count=$((deleted_count + 1))
+    else
+      warn "  ✗ Failed to delete bucket ${bucket_name}."
+    fi
+  done <<< "$buckets"
+  
+  if [[ ${#deleted_resources[@]} -gt 0 ]]; then
+    info "Deleted buckets:"
+    for resource in "${deleted_resources[@]}"; do
+      info "  - ${resource}"
+    done
+  fi
+  info "Total: ${deleted_count} bucket(s) deleted."
 }
 
 main() {
@@ -355,6 +444,7 @@ main() {
   info "  - Functions applications and functions with name matching 'oci-usage-reports*'"
   info "  - OCIR repositories with name matching 'oci-usage-reports*'"
   info "  - VCNs and subnets with name matching 'oci-usage-reports*'"
+  info "  - Object Storage buckets with name matching 'copyusagereport*'"
   echo
   
   # Setup OCI CLI context
@@ -397,6 +487,8 @@ main() {
   delete_ocir_repos "$compartment_id"
   echo
   delete_networks "$compartment_id"
+  echo
+  delete_buckets "$compartment_id"
   echo
   
   info "Cleanup completed."
