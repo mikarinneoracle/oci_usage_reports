@@ -895,7 +895,7 @@ ocir_login_cloud_shell() {
   desc="oci-usage-reports-ocir-token-temp"
   
   # Check if token was already created (for retry scenarios) - reuse if same user
-  local token_create_output token_id token_value
+  local token_create_output token_id token_value token_just_created=false
   if [[ -n "${OCIR_AUTH_TOKEN_VALUE:-}" && -n "${OCIR_AUTH_TOKEN_USER:-}" && "$user" == "${OCIR_AUTH_TOKEN_USER}" ]]; then
     info "Reusing existing OCIR auth token (token already created for this user)..."
     token_value="${OCIR_AUTH_TOKEN_VALUE}"
@@ -927,10 +927,11 @@ ocir_login_cloud_shell() {
     OCIR_AUTH_TOKEN_USER_OCID="$user_ocid"
     OCIR_AUTH_TOKEN_VALUE="$token_value"
     OCIR_AUTH_TOKEN_USER="$user"
+    token_just_created=true
   fi
   
   # 4) Wait 60 seconds for token propagation (only if token was just created, not reused)
-  if [[ -z "${OCIR_AUTH_TOKEN_VALUE:-}" || "$user" != "${OCIR_AUTH_TOKEN_USER:-}" ]]; then
+  if [[ "$token_just_created" == "true" ]]; then
     info "Waiting 60 seconds for token propagation..."
     sleep 60
   else
