@@ -491,6 +491,101 @@ except Exception:
   info "Total: ${deleted_count} network resource(s) deleted."
 }
 
+delete_pars() {
+  local compartment_id="$1"
+  local deleted_count=0
+  local deleted_resources=()
+  
+  # Get namespace
+  local namespace
+  namespace="$(run_oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
+  if [[ -z "$namespace" ]]; then
+    warn "Could not determine Object Storage namespace. Skipping PAR deletion."
+    return 0
+  fi
+  
+  # Get bucket pattern from .env to find buckets that might have PARs
+  local bucket_pattern="${BUCKET_NAME:-copyusagereport}"
+  bucket_pattern="$(printf '%s' "$bucket_pattern" | tr '[:upper:]' '[:lower:]')"  # Convert to lowercase
+  
+  info "Searching for Pre-Authenticated Requests (PARs) for buckets matching '${bucket_pattern}*'..."
+  
+  # Find buckets matching the pattern
+  local buckets
+  buckets="$(run_oci os bucket list \
+    --compartment-id "$compartment_id" \
+    --namespace-name "$namespace" \
+    --all \
+    --output json 2>/dev/null | python3 -c "
+import sys, json
+pattern = '${bucket_pattern}'.lower()
+try:
+    data = json.load(sys.stdin).get('data', [])
+    for bucket in data:
+        name = bucket.get('name') or ''
+        if name.lower().startswith(pattern):
+            print(f\"{name}\")
+except Exception:
+    pass
+" 2>/dev/null || true)"
+  
+  if [[ -z "$buckets" ]]; then
+    info "No buckets found with name matching '${bucket_pattern}*'. Skipping PAR deletion."
+    return 0
+  fi
+  
+  # For each bucket, find and delete PARs
+  while IFS= read -r bucket_name; do
+    [[ -z "$bucket_name" ]] && continue
+    
+    # Find PARs for this bucket
+    local pars
+    pars="$(run_oci os preauth-request list \
+      --namespace-name "$namespace" \
+      --bucket-name "$bucket_name" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+pattern = 'copyusagereport-par-'.lower()
+try:
+    data = json.load(sys.stdin).get('data', [])
+    for par in data:
+        name = par.get('name') or ''
+        par_id = par.get('id') or ''
+        if name.lower().startswith(pattern) and par_id:
+            print(f\"{par_id}|{name}\")
+except Exception:
+    pass
+" 2>/dev/null || true)"
+    
+    if [[ -n "$pars" ]]; then
+      while IFS='|' read -r par_id par_name; do
+        [[ -z "$par_id" ]] || [[ -z "$par_name" ]] && continue
+        
+        info "Deleting PAR: ${par_name} (bucket: ${bucket_name})"
+        if run_oci os preauth-request delete \
+          --namespace-name "$namespace" \
+          --par-id "$par_id" \
+          --force >/dev/null 2>&1; then
+          info "  ✓ PAR deleted: ${par_name}"
+          deleted_resources+=("PAR: ${par_name} (bucket: ${bucket_name})")
+          deleted_count=$((deleted_count + 1))
+        else
+          warn "  ✗ Failed to delete PAR ${par_name}."
+        fi
+      done <<< "$pars"
+    fi
+  done <<< "$buckets"
+  
+  if [[ ${#deleted_resources[@]} -gt 0 ]]; then
+    info "Deleted PARs:"
+    for resource in "${deleted_resources[@]}"; do
+      info "  - ${resource}"
+    done
+  fi
+  info "Total: ${deleted_count} PAR(s) deleted."
+}
+
 delete_buckets() {
   local compartment_id="$1"
   local deleted_count=0
@@ -538,11 +633,43 @@ except Exception:
     
     info "Deleting bucket: ${bucket_name}"
     
-    # First, delete all objects in the bucket (including versions)
+    # First, delete all objects in the bucket
     info "  Deleting objects in bucket..."
+    local objects_deleted=0
+    local objects
+    objects="$(run_oci os object list \
+      --bucket-name "$bucket_name" \
+      --namespace-name "$namespace" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', {}).get('objects', [])
+    for obj in data:
+        name = obj.get('name') or ''
+        if name:
+            print(name)
+except Exception:
+    pass
+" 2>/dev/null || true)"
     
-    # Delete object versions first (if versioning is enabled)
-    local versions_deleted=0
+    if [[ -n "$objects" ]]; then
+      while IFS= read -r object_name; do
+        [[ -z "$object_name" ]] && continue
+        if run_oci os object delete \
+          --bucket-name "$bucket_name" \
+          --namespace-name "$namespace" \
+          --object-name "$object_name" \
+          --force >/dev/null 2>&1; then
+          objects_deleted=$((objects_deleted + 1))
+        fi
+      done <<< "$objects"
+      if [[ $objects_deleted -gt 0 ]]; then
+        info "    ✓ Deleted ${objects_deleted} object(s)"
+      fi
+    fi
+    
+    # Also delete object versions if versioning is enabled
     local versions
     versions="$(run_oci os object list \
       --bucket-name "$bucket_name" \
@@ -563,6 +690,7 @@ except Exception:
 " 2>/dev/null || true)"
     
     if [[ -n "$versions" ]]; then
+      local versions_deleted=0
       while IFS='|' read -r object_name version_id; do
         [[ -z "$object_name" ]] || [[ -z "$version_id" ]] && continue
         if run_oci os object delete \
@@ -579,75 +707,6 @@ except Exception:
       fi
     fi
     
-    # Delete current objects (may need multiple passes if there are many objects)
-    local objects_deleted=0
-    local total_objects=0
-    local pass=1
-    local max_passes=10
-    
-    while [[ $pass -le $max_passes ]]; do
-      local objects
-      objects="$(run_oci os object list \
-        --bucket-name "$bucket_name" \
-        --namespace-name "$namespace" \
-        --all \
-        --output json 2>/dev/null | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin).get('data', {}).get('objects', [])
-    for obj in data:
-        name = obj.get('name') or ''
-        if name:
-            print(name)
-except Exception:
-    pass
-" 2>/dev/null || true)"
-      
-      if [[ -z "$objects" ]]; then
-        break  # No more objects
-      fi
-      
-      if [[ $pass -eq 1 ]]; then
-        total_objects=$(echo "$objects" | wc -l | tr -d ' ')
-        if [[ $total_objects -gt 0 ]]; then
-          info "    Found ${total_objects} object(s) to delete"
-        fi
-      fi
-      
-      local pass_deleted=0
-      while IFS= read -r object_name; do
-        [[ -z "$object_name" ]] && continue
-        if run_oci os object delete \
-          --bucket-name "$bucket_name" \
-          --namespace-name "$namespace" \
-          --object-name "$object_name" \
-          --force >/dev/null 2>&1; then
-          objects_deleted=$((objects_deleted + 1))
-          pass_deleted=$((pass_deleted + 1))
-        else
-          warn "      Failed to delete object: ${object_name}"
-        fi
-      done <<< "$objects"
-      
-      if [[ $pass_deleted -eq 0 ]]; then
-        break  # No progress, stop trying
-      fi
-      
-      pass=$((pass + 1))
-      sleep 1  # Brief delay between passes
-    done
-    
-    if [[ $objects_deleted -gt 0 ]]; then
-      info "    ✓ Deleted ${objects_deleted} object(s) in ${pass} pass(es)"
-    elif [[ $total_objects -eq 0 && $versions_deleted -eq 0 ]]; then
-      info "    Bucket is empty"
-    fi
-    
-    # Wait a moment for deletions to propagate
-    if [[ $objects_deleted -gt 0 || $versions_deleted -gt 0 ]]; then
-      sleep 2
-    fi
-    
     # Now delete the bucket itself
     if run_oci os bucket delete \
       --bucket-name "$bucket_name" \
@@ -657,26 +716,7 @@ except Exception:
       deleted_resources+=("Bucket: ${bucket_name}")
       deleted_count=$((deleted_count + 1))
     else
-      # Check if bucket still has objects
-      local remaining_objects
-      remaining_objects="$(run_oci os object list \
-        --bucket-name "$bucket_name" \
-        --namespace-name "$namespace" \
-        --all \
-        --output json 2>/dev/null | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin).get('data', {}).get('objects', [])
-    print(len(data))
-except Exception:
-    print(0)
-" 2>/dev/null || echo "0")"
-      
-      if [[ "$remaining_objects" != "0" ]]; then
-        warn "  ✗ Failed to delete bucket ${bucket_name}. Bucket still contains ${remaining_objects} object(s)."
-      else
-        warn "  ✗ Failed to delete bucket ${bucket_name}. Check permissions or bucket policies."
-      fi
+      warn "  ✗ Failed to delete bucket ${bucket_name}."
     fi
   done <<< "$buckets"
   
@@ -752,6 +792,8 @@ main() {
   delete_ocir_repos "$compartment_id"
   echo
   delete_networks "$compartment_id"
+  echo
+  delete_pars "$compartment_id"
   echo
   delete_buckets "$compartment_id"
   echo
