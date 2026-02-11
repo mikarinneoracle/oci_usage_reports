@@ -914,16 +914,23 @@ ocir_login_cloud_shell() {
   info "Waiting 60 seconds for token propagation..."
   sleep 60
   
-  # 5) Login to OCIR with format: namespace/domain/username and auth token
-  info "Logging in to OCIR (${host}) with username '${user}'..."
-  if "${CONTAINER_CMD}" login "$host" -u "$user" -p "$token_value"; then
-    info "${CONTAINER_CMD} login to OCIR succeeded."
-    # Store token value for use in push retry
-    token="$token_value"
-    return 0
-  fi
+  # 5) Login to OCIR with format: namespace/domain/username and auth token (retry up to 3 times)
+  local attempt
+  for attempt in 1 2 3; do
+    info "Logging in to OCIR (${host}) with username '${user}' (attempt ${attempt}/3)..."
+    if "${CONTAINER_CMD}" login "$host" -u "$user" -p "$token_value" 2>/dev/null; then
+      info "${CONTAINER_CMD} login to OCIR succeeded."
+      # Store token value for use in push retry
+      token="$token_value"
+      return 0
+    fi
+    if [[ $attempt -lt 3 ]]; then
+      warn "Login failed (attempt ${attempt}/3). Token may need more time to propagate. Retrying in 10 seconds..."
+      sleep 10
+    fi
+  done
   
-  error "${CONTAINER_CMD} login to OCIR failed. Token may need more time to propagate; wait 1-2 minutes and retry."
+  error "${CONTAINER_CMD} login to OCIR failed after 3 attempts. Token may need more time to propagate; wait 1-2 minutes and retry manually."
 }
 
 ocir_login_localhost() {
