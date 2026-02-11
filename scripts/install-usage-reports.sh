@@ -762,23 +762,142 @@ prechecks() {
   fi
 }
 
-# OCIR login using oci raw-request token (same for Cloud Shell and localhost; no auth token creation).
+# OCIR login: Cloud Shell uses auth tokens (username + domain selection + token creation), localhost uses raw-request token.
 ocir_login() {
+  local region_key="$1"
+  local namespace="${2:-}"
+  
+  if [[ "${INSTALLER_ENV:-}" == "cloud_shell" ]]; then
+    ocir_login_cloud_shell "${region_key}" "${namespace}"
+  else
+    ocir_login_localhost "${region_key}"
+  fi
+}
+
+ocir_login_cloud_shell() {
+  local region_key="$1"
+  local namespace="$2"
+  local host="${region_key}.ocir.io"
+  local user_ocid domain_segment user_raw user prefix token desc tenancy_ocid domains_array i n custom_opt domain_choice default_user_login
+  
+  info "OCIR login for Cloud Shell (using auth token)"
+  
+  # Get namespace if not provided (should be available from install_prebuilt_with_fn)
+  if [[ -z "$namespace" ]]; then
+    namespace="$(detect_default_namespace || true)"
+    [[ -z "$namespace" ]] && namespace="$(oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
+    [[ -z "$namespace" ]] && error "Could not determine Object Storage namespace for OCIR login."
+  fi
+  
+  # 1) Prompt for username (default from .env: OCIR_USER)
+  user_raw="$(prompt_default 'Enter OCIR username (user part only)' "${OCIR_USER:-}")"
+  [[ -z "$user_raw" ]] && error "OCIR username is required."
+  
+  # 2) Show identity domains in tenancy root to select
+  tenancy_ocid="$(detect_tenancy_ocid || true)"
+  [[ -z "$tenancy_ocid" ]] && error "Could not detect tenancy OCID."
+  
+  domains_array=()
+  while IFS= read -r line; do
+    line="$(printf '%s' "$line" | tr -d '[:space:]')"
+    [[ -z "$line" ]] && continue
+    [[ "$line" == "[]" || "$line" == "null" ]] && continue
+    domains_array+=("$line")
+  done < <(list_identity_domain_names "${tenancy_ocid}" "${region_key}" 2>/dev/null || true)
+  
+  if [[ ${#domains_array[@]} -gt 0 ]]; then
+    info "Select identity domain for OCIR username (from tenancy root compartment or custom):"
+    n=0
+    for i in "${domains_array[@]}"; do
+      [[ -z "$i" ]] && continue
+      n=$((n + 1))
+      echo "  ${n}) ${i}"
+    done
+    custom_opt=$((n + 1))
+    echo "  ${custom_opt}) Custom domain"
+    while true; do
+      domain_choice="$(prompt_default 'Enter choice' '1')"
+      if [[ "$domain_choice" == "$custom_opt" ]] || [[ "$domain_choice" == "custom" ]] || [[ "$domain_choice" == "Custom" ]]; then
+        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
+        break
+      fi
+      if [[ "$domain_choice" =~ ^[0-9]+$ ]] && [[ "$domain_choice" -ge 1 ]] && [[ "$domain_choice" -le "$n" ]]; then
+        domain_segment="${domains_array[$((domain_choice - 1))]}"
+        break
+      fi
+      warn "Invalid choice. Enter 1-${n} for a domain or ${custom_opt} for custom."
+    done
+  else
+    info "Select identity domain for OCIR username:"
+    echo "  1) oracleidentitycloudservice (default for IDCS-backed tenancies)"
+    echo "  2) Custom domain"
+    domain_choice="$(prompt_default 'Enter choice' '1')"
+    case "$domain_choice" in
+      1|"")
+        domain_segment="oracleidentitycloudservice"
+        ;;
+      2)
+        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
+        ;;
+      *)
+        warn "Unknown choice '${domain_choice}', defaulting to 'oracleidentitycloudservice'."
+        domain_segment="oracleidentitycloudservice"
+        ;;
+    esac
+  fi
+  
+  domain_segment_lower="$(printf '%s' "$domain_segment" | tr '[:upper:]' '[:lower:]')"
+  prefix="${namespace}/${domain_segment_lower}"
+  user="${prefix}/${user_raw}"
+  
+  # 3) Create auth token (description from .env: OCIR_TOKEN_DESCRIPTION)
+  user_ocid="$(detect_default_user_ocid || true)"
+  if [[ -z "$user_ocid" ]]; then
+    error "Could not detect user OCID. Ensure OCI CLI is configured or provide USER_OCID in .env."
+  fi
+  
+  desc="$(prompt_default 'Enter description for new OCIR auth token' "${OCIR_TOKEN_DESCRIPTION:-oci-usage-reports-ocir-token}")"
+  
+  info "Creating OCIR auth token via OCI CLI..."
+  token="$(oci iam auth-token create \
+      --user-id "$user_ocid" \
+      --description "$desc" \
+      --query 'data.token' \
+      --raw-output 2>/dev/null || true)"
+  
+  if [[ -z "$token" ]]; then
+    error "Failed to create auth token via OCI CLI. Check your permissions and try manually from the OCI Console."
+  fi
+  
+  echo
+  warn "New OCIR auth token created (store this securely; OCI will not show it again):"
+  echo "$token"
+  echo
+  
+  # 4) Wait 60 seconds for token propagation
+  info "Waiting 60 seconds for token propagation..."
+  sleep 60
+  
+  # 5) Login to OCIR with format: region/domain/username and auth token
+  info "Logging in to OCIR (${host}) with username '${user}'..."
+  if printf '%s' "$token" | "${CONTAINER_CMD}" login "$host" -u "$user" --password-stdin; then
+    info "${CONTAINER_CMD} login to OCIR succeeded."
+    return 0
+  fi
+  
+  error "${CONTAINER_CMD} login to OCIR failed. Token may need more time to propagate; wait 1-2 minutes and retry."
+}
+
+ocir_login_localhost() {
   local region_key="$1"
   local host="${region_key}.ocir.io"
   local token
   info "Logging in to OCIR (${host}) via oci raw-request token..."
-  if [[ "${INSTALLER_ENV:-}" == "cloud_shell" ]]; then
-    token="$(oci raw-request --region "$region_key" --http-method GET \
-      --target-uri "https://${region_key}.ocir.io/20180419/docker/token" \
-      --auth=instance_principal 2>/dev/null | jq -r .data.token)" || true
-  else
-    token="$(run_oci raw-request --region "$region_key" --http-method GET \
+  token="$(run_oci raw-request --region "$region_key" --http-method GET \
       --target-uri "https://${region_key}.ocir.io/20180419/docker/token" \
       2>/dev/null | jq -r .data.token)" || true
-  fi
   if [[ -z "$token" || "$token" == "null" ]]; then
-    error "Failed to get OCIR token. Ensure OCI CLI is configured (localhost) or you are in Cloud Shell (instance principal)."
+    error "Failed to get OCIR token. Ensure OCI CLI is configured."
   fi
   if printf '%s' "$token" | "${CONTAINER_CMD}" login -u BEARER_TOKEN --password-stdin "$host"; then
     info "${CONTAINER_CMD} login to OCIR succeeded."
@@ -913,7 +1032,7 @@ install_prebuilt_with_fn() {
     warn "Could not get Functions app compartment; OCIR repositories may be created in tenancy root on first push."
   fi
 
-  ocir_login "${region_key}"
+  ocir_login "${region_key}" "${namespace}"
 
   info "Pulling prebuilt images from Docker Hub (${arch_tag})"
   "${CONTAINER_CMD}" pull "mikarinneoracle/oci-copy-usage-report:${arch_tag}"
@@ -934,11 +1053,28 @@ install_prebuilt_with_fn() {
     fi
     push_out="$(cat "$tmp")"
     rm -f "$tmp"
-    if [[ "$push_out" == *[Uu]nauthorized* || "$push_out" == *"invalid username/password"* ]]; then
-      warn "Push failed (auth); token may need a moment to propagate. Retrying in 10s..."
-      sleep 10
+    if [[ "$push_out" == *[Uu]nauthorized* || "$push_out" == *"invalid username/password"* || "$push_out" == *"StatusCode: 403"* || "$push_out" == *"403"* ]]; then
+      warn "Push failed (auth/403); re-authenticating and retrying..."
+      ocir_login "${region_key}" "${namespace}" || { echo "$push_out" >&2; return 1; }
+      sleep 5
       info "Retrying push: $img"
-      "${CONTAINER_CMD}" push "$img" || { echo "$push_out" >&2; return 1; }
+      if "${CONTAINER_CMD}" push "$img" 2>&1 | tee "$tmp"; then
+        rm -f "$tmp"
+        return 0
+      fi
+      push_out="$(cat "$tmp")"
+      rm -f "$tmp"
+      echo "$push_out" >&2
+      if [[ "$push_out" == *"StatusCode: 403"* || "$push_out" == *"403"* ]]; then
+        local comp_info=""
+        if [[ -n "$app_compartment_name" ]]; then
+          comp_info=" in compartment '${app_compartment_name}'"
+        elif [[ -n "$app_compartment_id" ]]; then
+          comp_info=" in compartment '${app_compartment_id}'"
+        fi
+        warn "Push still failing with 403. Ensure the instance principal (Cloud Shell) or user has 'manage repos' permission on the OCIR repositories${comp_info}. Check IAM policies for the Functions app compartment."
+      fi
+      return 1
     else
       echo "$push_out" >&2
       return 1
