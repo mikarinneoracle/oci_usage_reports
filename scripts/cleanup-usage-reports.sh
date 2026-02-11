@@ -767,32 +767,86 @@ except Exception as e:
     # Only check for versions if we found objects (to avoid hanging on empty buckets)
     if [[ $objects_deleted -gt 0 || -n "$objects" ]]; then
       info "  Listing object versions..."
+      info "    Command: oci os object list --bucket-name '${bucket_name}' --namespace-name '${namespace}' --all --versions --output json"
       local versions
       local versions_error
       local versions_exit_code
-      versions_error="$(run_oci os object list \
-        --bucket-name "$bucket_name" \
-        --namespace-name "$namespace" \
-        --all \
-        --versions \
-        --output json 2>&1)"
-      versions_exit_code=$?
-    
-      if [[ $versions_exit_code -ne 0 ]]; then
-        warn "    Failed to list object versions: ${versions_error}"
+      
+      # Use timeout to prevent hanging (30 seconds)
+      if command -v timeout >/dev/null 2>&1; then
+        versions_error="$(timeout 30 run_oci os object list \
+          --bucket-name "$bucket_name" \
+          --namespace-name "$namespace" \
+          --all \
+          --versions \
+          --output json 2>&1)"
+        versions_exit_code=$?
+      elif command -v gtimeout >/dev/null 2>&1; then
+        # macOS might have gtimeout from coreutils
+        versions_error="$(gtimeout 30 run_oci os object list \
+          --bucket-name "$bucket_name" \
+          --namespace-name "$namespace" \
+          --all \
+          --versions \
+          --output json 2>&1)"
+        versions_exit_code=$?
       else
+        # No timeout available, proceed without it
+        versions_error="$(run_oci os object list \
+          --bucket-name "$bucket_name" \
+          --namespace-name "$namespace" \
+          --all \
+          --versions \
+          --output json 2>&1)"
+        versions_exit_code=$?
+      fi
+      
+      info "    Exit code: ${versions_exit_code}"
+      if [[ $versions_exit_code -eq 124 ]] || [[ "$versions_error" == *"timeout"* ]]; then
+        warn "    Version listing timed out after 30 seconds. Skipping version deletion."
+        versions=""
+      elif [[ $versions_exit_code -ne 0 ]]; then
+        warn "    Failed to list object versions: ${versions_error}"
+        versions=""
+      else
+        # Show JSON preview for debugging
+        local json_preview
+        json_preview="$(echo "$versions_error" | head -c 500)"
+        info "    JSON preview: ${json_preview}..."
+        
         versions="$(echo "$versions_error" | python3 -c "
 import sys, json
 try:
-    data = json.load(sys.stdin).get('data', {}).get('objects', [])
-    for obj in data:
-        name = obj.get('name') or ''
+    data = json.load(sys.stdin)
+    # Try different possible structures
+    obj_list = []
+    if isinstance(data, dict):
+        if 'data' in data:
+            if isinstance(data['data'], dict) and 'objects' in data['data']:
+                obj_list = data['data']['objects']
+            elif isinstance(data['data'], list):
+                obj_list = data['data']
+        elif 'objects' in data:
+            obj_list = data['objects']
+    elif isinstance(data, list):
+        obj_list = data
+    
+    for obj in obj_list:
+        name = obj.get('name') or obj.get('display-name') or ''
         version_id = obj.get('version-id') or ''
         if name and version_id:
             print(f\"{name}|{version_id}\")
-except Exception:
+except Exception as e:
+    sys.stderr.write(f'Error parsing JSON: {e}\n')
     pass
-" 2>/dev/null || true)"
+" 2>&1)"
+        
+        local parse_error
+        parse_error="$(echo "$versions" | grep -i "error" || true)"
+        if [[ -n "$parse_error" ]]; then
+          warn "    JSON parsing error: ${parse_error}"
+          versions=""
+        fi
         
         if [[ -n "$versions" ]]; then
           local version_count
