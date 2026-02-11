@@ -5,10 +5,13 @@ set -euo pipefail
 # cleanup-usage-reports.sh
 #
 # Cleanup script to remove all OCI Usage Reports resources:
-#   - Functions applications and functions with name matching "oci-usage-reports*"
-#   - OCIR repositories with name matching "oci-usage-reports*"
-#   - VCNs and subnets with name matching "oci-usage-reports*"
-#   - Object Storage buckets with name matching "copyusagereport*"
+#   - Functions applications and functions with name matching patterns from .env + "*"
+#   - OCIR repositories with name matching OCIR_REPO_NAME + "*"
+#   - VCNs and subnets with name matching VCN_NAME + "*"
+#   - Object Storage buckets with name matching BUCKET_NAME + "*"
+#
+# Patterns are read from scripts/.env (APP_NAME, OCIR_REPO_NAME, VCN_NAME, BUCKET_NAME)
+# and "*" is appended for matching. Defaults are used if variables are not set.
 #
 # This script uses OCI CLI authentication only (not Resource Principal).
 # Run from the repository root or scripts directory.
@@ -187,7 +190,12 @@ delete_functions() {
   local deleted_count=0
   local deleted_resources=()
   
-  info "Searching for Functions applications with name matching 'oci-usage-reports*'..."
+  # Get pattern from .env (default to VCN_NAME or OCIR_REPO_NAME, remove -app suffix if present)
+  local app_pattern="${APP_NAME:-${VCN_NAME:-${OCIR_REPO_NAME:-oci-usage-reports}}}"
+  app_pattern="${app_pattern%-app}"  # Remove -app suffix if present
+  app_pattern="${app_pattern,,}"  # Convert to lowercase
+  
+  info "Searching for Functions applications with name matching '${app_pattern}*'..."
   
   local apps
   apps="$(run_oci fn application list \
@@ -195,18 +203,19 @@ delete_functions() {
     --all \
     --output json 2>/dev/null | python3 -c "
 import sys, json
+pattern = '${app_pattern}'.lower()
 try:
     data = json.load(sys.stdin).get('data', [])
     for app in data:
         name = app.get('display-name') or app.get('name') or ''
-        if name.lower().startswith('oci-usage-reports'):
+        if name.lower().startswith(pattern):
             print(f\"{app.get('id')}|{name}\")
 except Exception:
     pass
 " 2>/dev/null || true)"
   
   if [[ -z "$apps" ]]; then
-    info "No Functions applications found with name matching 'oci-usage-reports*'."
+    info "No Functions applications found with name matching '${app_pattern}*'."
     return 0
   fi
   
@@ -270,7 +279,11 @@ delete_ocir_repos() {
   local deleted_count=0
   local deleted_resources=()
   
-  info "Searching for OCIR repositories with name matching 'oci-usage-reports*'..."
+  # Get pattern from .env
+  local repo_pattern="${OCIR_REPO_NAME:-oci-usage-reports}"
+  repo_pattern="${repo_pattern,,}"  # Convert to lowercase
+  
+  info "Searching for OCIR repositories with name matching '${repo_pattern}*'..."
   
   local repos
   repos="$(run_oci artifacts container repository list \
@@ -278,18 +291,19 @@ delete_ocir_repos() {
     --all \
     --output json 2>/dev/null | python3 -c "
 import sys, json
+pattern = '${repo_pattern}'.lower()
 try:
     data = json.load(sys.stdin).get('data', [])
     for repo in data:
         name = repo.get('display-name') or repo.get('name') or ''
-        if name.lower().startswith('oci-usage-reports'):
+        if name.lower().startswith(pattern):
             print(f\"{repo.get('id')}|{name}\")
 except Exception:
     pass
 " 2>/dev/null || true)"
   
   if [[ -z "$repos" ]]; then
-    info "No OCIR repositories found with name matching 'oci-usage-reports*'."
+    info "No OCIR repositories found with name matching '${repo_pattern}*'."
     return 0
   fi
   
@@ -320,7 +334,11 @@ delete_networks() {
   local deleted_count=0
   local deleted_resources=()
   
-  info "Searching for VCNs with name matching 'oci-usage-reports*'..."
+  # Get pattern from .env
+  local vcn_pattern="${VCN_NAME:-oci-usage-reports}"
+  vcn_pattern="${vcn_pattern,,}"  # Convert to lowercase
+  
+  info "Searching for VCNs with name matching '${vcn_pattern}*'..."
   
   local vcns
   vcns="$(run_oci network vcn list \
@@ -328,18 +346,19 @@ delete_networks() {
     --all \
     --output json 2>/dev/null | python3 -c "
 import sys, json
+pattern = '${vcn_pattern}'.lower()
 try:
     data = json.load(sys.stdin).get('data', [])
     for vcn in data:
         name = vcn.get('display-name') or vcn.get('name') or ''
-        if name.lower().startswith('oci-usage-reports'):
+        if name.lower().startswith(pattern):
             print(f\"{vcn.get('id')}|{name}\")
 except Exception:
     pass
 " 2>/dev/null || true)"
   
   if [[ -z "$vcns" ]]; then
-    info "No VCNs found with name matching 'oci-usage-reports*'."
+    info "No VCNs found with name matching '${vcn_pattern}*'."
     return 0
   fi
   
@@ -348,7 +367,11 @@ except Exception:
     
     info "Found VCN: ${vcn_name} (${vcn_id})"
     
-    # List subnets in this VCN
+    # List subnets in this VCN (use SUBNET_NAME pattern, removing suffix if present)
+    local subnet_pattern="${SUBNET_NAME:-${vcn_pattern}-private}"
+    subnet_pattern="${subnet_pattern%-private}"  # Remove -private suffix if present
+    subnet_pattern="${subnet_pattern,,}"  # Convert to lowercase
+    
     local subnets
     subnets="$(run_oci network subnet list \
       --compartment-id "$compartment_id" \
@@ -356,11 +379,12 @@ except Exception:
       --all \
       --output json 2>/dev/null | python3 -c "
 import sys, json
+pattern = '${subnet_pattern}'.lower()
 try:
     data = json.load(sys.stdin).get('data', [])
     for subnet in data:
         name = subnet.get('display-name') or subnet.get('name') or ''
-        if name.lower().startswith('oci-usage-reports'):
+        if name.lower().startswith(pattern):
             print(f\"{subnet.get('id')}|{name}\")
 except Exception:
     pass
@@ -414,7 +438,11 @@ delete_buckets() {
     return 0
   fi
   
-  info "Searching for Object Storage buckets with name matching 'copyusagereport*'..."
+  # Get pattern from .env
+  local bucket_pattern="${BUCKET_NAME:-copyusagereport}"
+  bucket_pattern="${bucket_pattern,,}"  # Convert to lowercase
+  
+  info "Searching for Object Storage buckets with name matching '${bucket_pattern}*'..."
   
   local buckets
   buckets="$(run_oci os bucket list \
@@ -423,18 +451,19 @@ delete_buckets() {
     --all \
     --output json 2>/dev/null | python3 -c "
 import sys, json
+pattern = '${bucket_pattern}'.lower()
 try:
     data = json.load(sys.stdin).get('data', [])
     for bucket in data:
         name = bucket.get('name') or ''
-        if name.lower().startswith('copyusagereport'):
+        if name.lower().startswith(pattern):
             print(f\"{name}\")
 except Exception:
     pass
 " 2>/dev/null || true)"
   
   if [[ -z "$buckets" ]]; then
-    info "No buckets found with name matching 'copyusagereport*'."
+    info "No buckets found with name matching '${bucket_pattern}*'."
     return 0
   fi
   
@@ -464,12 +493,19 @@ except Exception:
 }
 
 main() {
+  # Get patterns from .env
+  local app_pattern="${APP_NAME:-${VCN_NAME:-${OCIR_REPO_NAME:-oci-usage-reports}}}"
+  app_pattern="${app_pattern%-app}"
+  local repo_pattern="${OCIR_REPO_NAME:-oci-usage-reports}"
+  local vcn_pattern="${VCN_NAME:-oci-usage-reports}"
+  local bucket_pattern="${BUCKET_NAME:-copyusagereport}"
+  
   info "Cleanup OCI Usage Reports Resources"
   info "This will remove:"
-  info "  - Functions applications and functions with name matching 'oci-usage-reports*'"
-  info "  - OCIR repositories with name matching 'oci-usage-reports*'"
-  info "  - VCNs and subnets with name matching 'oci-usage-reports*'"
-  info "  - Object Storage buckets with name matching 'copyusagereport*'"
+  info "  - Functions applications and functions with name matching '${app_pattern}*'"
+  info "  - OCIR repositories with name matching '${repo_pattern}*'"
+  info "  - VCNs and subnets with name matching '${vcn_pattern}*'"
+  info "  - Object Storage buckets with name matching '${bucket_pattern}*'"
   echo
   
   # Setup OCI CLI context
@@ -504,7 +540,7 @@ main() {
   echo
   
   # Confirm deletion
-  if ! confirm "Delete all 'oci-usage-reports*' resources in compartment '${compartment_name:-$compartment_id}'?" "n"; then
+  if ! confirm "Delete all matching resources in compartment '${compartment_name:-$compartment_id}'?" "n"; then
     info "Cleanup cancelled."
     exit 0
   fi
