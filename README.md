@@ -88,7 +88,6 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 | `SUBNET_NAME` | Private subnet name when creating a new VCN | `oci-usage-reports-private` |
 | `VCN_CIDR` | VCN CIDR when creating a new VCN | `10.0.0.0/16` |
 | `SUBNET_CIDR` | Subnet CIDR when creating a new VCN | `10.0.1.0/24` |
-| `OCIR_TOKEN_DESCRIPTION` | Description for a new OCIR auth token | `oci-usage-reports-ocir-token` |
 | `PAR_TTL_DAYS` | PAR validity in days when creating a new PAR | `365` |
 
 ### What the installer does (briefly)

@@ -259,7 +259,7 @@ create_ocir_auth_token() {
     return 1
   fi
 
-  desc="$(prompt_default 'Enter description for new OCIR auth token' "${OCIR_TOKEN_DESCRIPTION:-oci-usage-reports-ocir-token}")"
+  desc="$(prompt_default 'Enter description for new OCIR auth token' 'oci-usage-reports-ocir-token')"
 
   info "Creating OCIR auth token via OCI CLI..."
   token="$(run_oci iam auth-token create \
@@ -300,9 +300,6 @@ create_functions_application() {
   fi
 
   info "Creating OCI Functions application via OCI CLI (architecture: ${arch_tag})."
-  info "You will need a **compartment name** and either:"
-  info "  - Create a new VCN with private subnet, or"
-  info "  - Choose an existing private subnet from the compartment."
 
   local tenancy_ocid
   tenancy_ocid="$(detect_tenancy_ocid || true)"
@@ -610,107 +607,121 @@ print_par_cloud_ui_instructions() {
 }
 
 ocir_docker_login() {
-  # Interactive Docker login loop to OCIR, with username/token prompts.
-  # Optional third arg: auth token to use as default (e.g. from create_ocir_auth_token); used automatically when possible.
-  # Username format hint: namespace/domain/username
+  # Docker login to OCIR (localhost only). Optional 3rd arg: auth token default. 4th arg "no_prompt_username" = use CLI config username without prompting.
+  # Username format: namespace/domain/username
   local region_key="$1"
   local namespace="$2"
   local default_token="${3:-}"
+  local no_prompt_username="${4:-}"
   local host="${region_key}.ocir.io"
   local user user_raw token suggested_user domain_choice domain_segment prefix
   local tenancy_ocid domains_array i n custom_opt
   local user_ocid default_user_login
+  local container_cmd="${CONTAINER_CMD:-docker}"
 
   info "OCIR login host: ${host}"
-  warn "OCIR username format: \"namespace/domain/username\""
 
-  # List identity domains from tenancy (root compartment) or offer Custom
-  tenancy_ocid="$(detect_tenancy_ocid || true)"
-  domains_array=()
-  while IFS= read -r line; do
-    line="$(printf '%s' "$line" | tr -d '[:space:]')"
-    [[ -z "$line" ]] && continue
-    [[ "$line" == "[]" || "$line" == "null" ]] && continue
-    domains_array+=("$line")
-  done < <(list_identity_domain_names "${tenancy_ocid}" "${region_key}" 2>/dev/null || true)
-
-  if [[ ${#domains_array[@]} -gt 0 ]]; then
-    info "Select identity domain for OCIR username (from tenancy root compartment or custom):"
-    n=0
-    for i in "${domains_array[@]}"; do
-      [[ -z "$i" ]] && continue
-      n=$((n + 1))
-      echo "  ${n}) ${i}"
-    done
-    custom_opt=$((n + 1))
-    echo "  ${custom_opt}) Custom domain"
-    while true; do
-      domain_choice="$(prompt_default 'Enter choice' '1')"
-      if [[ "$domain_choice" == "$custom_opt" ]] || [[ "$domain_choice" == "custom" ]] || [[ "$domain_choice" == "Custom" ]]; then
-        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
-        break
-      fi
-      if [[ "$domain_choice" =~ ^[0-9]+$ ]] && [[ "$domain_choice" -ge 1 ]] && [[ "$domain_choice" -le "$n" ]]; then
-        domain_segment="${domains_array[$((domain_choice - 1))]}"
-        break
-      fi
-      warn "Invalid choice. Enter 1-${n} for a domain or ${custom_opt} for custom."
-    done
+  # On localhost with no_prompt_username: use oracleidentitycloudservice and CLI config user only (no domain/username prompts).
+  if [[ "$no_prompt_username" == "no_prompt_username" ]]; then
+    domain_segment="oracleidentitycloudservice"
+    user_ocid="$(detect_default_user_ocid || true)"
+    if [[ -n "$user_ocid" ]] && command -v oci >/dev/null 2>&1; then
+      default_user_login="$(
+        run_oci iam user get \
+          --user-id "$user_ocid" \
+          --query 'data.name' \
+          --raw-output 2>/dev/null || true
+      )"
+      [[ "$default_user_login" == */* ]] && default_user_login="${default_user_login##*/}"
+    fi
+    if [[ -z "${default_user_login:-}" ]]; then
+      error "Could not detect OCIR username from OCI CLI config. Set up OCI CLI with a user (e.g. oci setup config) and ensure the profile has a valid user OCID."
+    fi
+    user_raw="$default_user_login"
+    prefix="${namespace}/$(printf '%s' "$domain_segment" | tr '[:upper:]' '[:lower:]')"
+    user="${prefix}/${user_raw}"
+    info "Using OCIR username from CLI config (no prompt)."
   else
-    # No domains listed (CLI failed or tenancy does not support identity domains): offer default + custom
-    info "Select identity domain for OCIR username:"
-    echo "  1) oracleidentitycloudservice (default for IDCS-backed tenancies)"
-    echo "  2) Custom domain"
-    domain_choice="$(prompt_default 'Enter choice' '1')"
-    case "$domain_choice" in
-      1|"")
-        domain_segment="oracleidentitycloudservice"
-        ;;
-      2)
-        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
-        ;;
-      *)
-        warn "Unknown choice '${domain_choice}', defaulting to 'oracleidentitycloudservice'."
-        domain_segment="oracleidentitycloudservice"
-        ;;
-    esac
-  fi
+    warn "OCIR username format: \"namespace/domain/username\""
+    tenancy_ocid="$(detect_tenancy_ocid || true)"
+    domains_array=()
+    while IFS= read -r line; do
+      line="$(printf '%s' "$line" | tr -d '[:space:]')"
+      [[ -z "$line" ]] && continue
+      [[ "$line" == "[]" || "$line" == "null" ]] && continue
+      domains_array+=("$line")
+    done < <(list_identity_domain_names "${tenancy_ocid}" "${region_key}" 2>/dev/null || true)
 
-  # OCIR expects the identity domain segment in lowercase (e.g. oracleidentitycloudservice).
-  domain_segment_lower="$(printf '%s' "$domain_segment" | tr '[:upper:]' '[:lower:]')"
-  prefix="${namespace}/${domain_segment_lower}"
-  suggested_user="${prefix}"
+    if [[ ${#domains_array[@]} -gt 0 ]]; then
+      info "Select identity domain for OCIR username (from tenancy root compartment or custom):"
+      n=0
+      for i in "${domains_array[@]}"; do
+        [[ -z "$i" ]] && continue
+        n=$((n + 1))
+        echo "  ${n}) ${i}"
+      done
+      custom_opt=$((n + 1))
+      echo "  ${custom_opt}) Custom domain"
+      while true; do
+        domain_choice="$(prompt_default 'Enter choice' '1')"
+        if [[ "$domain_choice" == "$custom_opt" ]] || [[ "$domain_choice" == "custom" ]] || [[ "$domain_choice" == "Custom" ]]; then
+          domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
+          break
+        fi
+        if [[ "$domain_choice" =~ ^[0-9]+$ ]] && [[ "$domain_choice" -ge 1 ]] && [[ "$domain_choice" -le "$n" ]]; then
+          domain_segment="${domains_array[$((domain_choice - 1))]}"
+          break
+        fi
+        warn "Invalid choice. Enter 1-${n} for a domain or ${custom_opt} for custom."
+      done
+    else
+      info "Select identity domain for OCIR username:"
+      echo "  1) oracleidentitycloudservice (default for IDCS-backed tenancies)"
+      echo "  2) Custom domain"
+      domain_choice="$(prompt_default 'Enter choice' '1')"
+      case "$domain_choice" in
+        1|"")
+          domain_segment="oracleidentitycloudservice"
+          ;;
+        2)
+          domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
+          ;;
+        *)
+          warn "Unknown choice '${domain_choice}', defaulting to 'oracleidentitycloudservice'."
+          domain_segment="oracleidentitycloudservice"
+          ;;
+      esac
+    fi
 
-  # Try to detect a sensible default username (user part) from OCI CLI config.
-  user_ocid="$(detect_default_user_ocid || true)"
-  if [[ -n "$user_ocid" ]] && command -v oci >/dev/null 2>&1; then
-    default_user_login="$(
-      run_oci iam user get \
-        --user-id "$user_ocid" \
-        --query 'data.name' \
-        --raw-output 2>/dev/null || true
-    )"
-    # Ensure the suggested default is just the login/user part (no domain path segments).
-    # If the name contains slashes (e.g. oracleidentitycloudservice/user@domain), keep only the part after the last slash.
-    if [[ "$default_user_login" == */* ]]; then
-      default_user_login="${default_user_login##*/}"
+    domain_segment_lower="$(printf '%s' "$domain_segment" | tr '[:upper:]' '[:lower:]')"
+    prefix="${namespace}/${domain_segment_lower}"
+    user_ocid="$(detect_default_user_ocid || true)"
+    if [[ -n "$user_ocid" ]] && command -v oci >/dev/null 2>&1; then
+      default_user_login="$(
+        run_oci iam user get \
+          --user-id "$user_ocid" \
+          --query 'data.name' \
+          --raw-output 2>/dev/null || true
+      )"
+      [[ "$default_user_login" == */* ]] && default_user_login="${default_user_login##*/}"
     fi
   fi
 
   for attempt in 1 2 3; do
-    # Use selected domain prefix (namespace/domain); prompt for username part only.
-    user_raw="$(prompt_default "Enter OCIR username (user part only)" "${default_user_login:-}")"
-    if [[ -z "$user_raw" ]]; then
-      warn "Username cannot be empty."
-      continue
+    if [[ "$no_prompt_username" != "no_prompt_username" ]]; then
+      user_raw="$(prompt_default "Enter OCIR username (user part only)" "${default_user_login:-}")"
+      if [[ -z "$user_raw" ]]; then
+        warn "Username cannot be empty."
+        continue
+      fi
+      user="${prefix}/${user_raw}"
     fi
-    user="${prefix}/${user_raw}"
 
     if [[ -n "$default_token" ]]; then
       token="$default_token"
       info "Using the auth token just generated."
       warn "If login fails, wait 1–2 minutes for the new token to propagate and try again."
-      default_token=""  # use only once; prompt on retry if login fails
+      default_token=""
     else
       read -s -p "Enter OCIR auth token (will not be echoed): " token || true
       echo
@@ -720,13 +731,13 @@ ocir_docker_login() {
       continue
     fi
 
-    info "Testing Docker login to ${host} with username '${user}' (attempt ${attempt}/3)..."
+    info "Testing ${container_cmd} login to ${host} with username '${user}' (attempt ${attempt}/3)..."
     while true; do
-      if printf '%s' "$token" | docker login "$host" -u "$user" --password-stdin; then
-        info "Docker login to OCIR succeeded."
+      if printf '%s' "$token" | "${container_cmd}" login "$host" -u "$user" --password-stdin; then
+        info "${container_cmd} login to OCIR succeeded."
         return 0
       fi
-      warn "Docker login failed. Token propagation may take a minute for new tokens."
+      warn "${container_cmd} login failed. Token propagation may take a minute for new tokens."
       if ! confirm "Retry in 60 seconds? (token propagation)" "y"; then
         break
       fi
@@ -741,8 +752,39 @@ ocir_docker_login() {
 prechecks() {
   info "Running prechecks for required CLIs"
   check_cmd oci
-  check_cmd docker
-  info "All required CLIs are available: oci, docker"
+  check_cmd jq
+  if [[ "${INSTALLER_ENV:-}" == "cloud_shell" ]]; then
+    check_cmd podman
+    info "All required CLIs are available: oci, jq, podman"
+  else
+    check_cmd docker
+    info "All required CLIs are available: oci, jq, docker"
+  fi
+}
+
+# OCIR login using oci raw-request token (same for Cloud Shell and localhost; no auth token creation).
+ocir_login() {
+  local region_key="$1"
+  local host="${region_key}.ocir.io"
+  local token
+  info "Logging in to OCIR (${host}) via oci raw-request token..."
+  if [[ "${INSTALLER_ENV:-}" == "cloud_shell" ]]; then
+    token="$(oci raw-request --region "$region_key" --http-method GET \
+      --target-uri "https://${region_key}.ocir.io/20180419/docker/token" \
+      --auth=instance_principal 2>/dev/null | jq -r .data.token)" || true
+  else
+    token="$(run_oci raw-request --region "$region_key" --http-method GET \
+      --target-uri "https://${region_key}.ocir.io/20180419/docker/token" \
+      2>/dev/null | jq -r .data.token)" || true
+  fi
+  if [[ -z "$token" || "$token" == "null" ]]; then
+    error "Failed to get OCIR token. Ensure OCI CLI is configured (localhost) or you are in Cloud Shell (instance principal)."
+  fi
+  if printf '%s' "$token" | "${CONTAINER_CMD}" login -u BEARER_TOKEN --password-stdin "$host"; then
+    info "${CONTAINER_CMD} login to OCIR succeeded."
+    return 0
+  fi
+  error "${CONTAINER_CMD} login to OCIR failed."
 }
 
 prompt_default() {
@@ -762,14 +804,14 @@ confirm() {
   local prompt="$1"
   local default="${2:-y}"
   local answer
-  # Show options (Y/n) or (y/N) so default is clear
+  # Show options [Y/n] or [y/N] so default is clear (brackets avoid any subshell parsing of parentheses)
   local label
   case "$default" in
     [Yy]*) label="Y/n" ;;
     *)     label="y/N" ;;
   esac
 
-  read -r -p "$prompt ($label): " answer || true
+  read -r -p "${prompt} [${label}]: " answer || true
   answer="${answer:-$default}"
   case "$answer" in
     [Yy]*) return 0 ;;
@@ -783,6 +825,13 @@ install_prebuilt_with_fn() {
   local default_region default_namespace
   default_region="$(detect_default_region || true)"
   default_namespace="$(detect_default_namespace || true)"
+
+  # Use podman in Cloud Shell (instance-principal OCIR login), docker on localhost.
+  if [[ "${INSTALLER_ENV:-}" == "cloud_shell" ]]; then
+    CONTAINER_CMD=podman
+  else
+    CONTAINER_CMD=docker
+  fi
 
   region_key="$(prompt_default 'Enter OCI region key' "${default_region:-}")"
   [[ -z "$region_key" ]] && error "Region key is required."
@@ -819,14 +868,7 @@ install_prebuilt_with_fn() {
     error "Internal error: Functions application OCID not set after creation."
   fi
 
-  # Bucket name: propose 'copyusagereport' as default; Enter accepts it.
-  while true; do
-    bucket_name="$(prompt_default 'Enter target bucket_name for copyusagereport' "${BUCKET_NAME:-copyusagereport}")"
-    if [[ -n "$bucket_name" ]]; then
-      break
-    fi
-    warn "bucket_name is required; please enter a non-empty value."
-  done
+  # Bucket name is prompted later: when no secret, or when secret with PAR option 1 (or for target bucket when secret).
 
   # tenancy_ocid is no longer prompted; leave empty to rely on function config defaults.
   tenancy_ocid=""
@@ -836,11 +878,15 @@ install_prebuilt_with_fn() {
 
   # Create OCIR container repositories in the Functions app compartment (not tenancy root) so the function can pull images.
   # Image paths are namespace/repo_name/oci-copy-usage-report and namespace/repo_name/oci-xtenancy-check; create both repo paths.
-  local app_compartment_id existing_repo repo_path
+  local app_compartment_id app_compartment_name existing_repo repo_path
   app_compartment_id="$(run_oci fn application get --application-id "$FN_APP_ID" --query 'data."compartment-id"' --raw-output 2>/dev/null || true)"
+  app_compartment_name=""
+  if [[ -n "$app_compartment_id" && "$app_compartment_id" != "null" ]]; then
+    app_compartment_name="$(run_oci iam compartment get --compartment-id "$app_compartment_id" --query 'data.name' --raw-output 2>/dev/null || true)"
+  fi
   if [[ -n "$app_compartment_id" && "$app_compartment_id" != "null" ]]; then
     for repo_path in "${repo_name}/oci-copy-usage-report" "${repo_name}/oci-xtenancy-check"; do
-      info "Ensuring OCIR repository '${repo_path}' exists in the Functions app compartment..."
+      info "Ensuring OCIR repository '${repo_path}' exists in compartment '${app_compartment_name:-$app_compartment_id}'..."
       existing_repo="$(run_oci artifacts container repository list \
         --compartment-id "$app_compartment_id" \
         --display-name "$repo_path" \
@@ -852,43 +898,37 @@ install_prebuilt_with_fn() {
           --display-name "$repo_path" \
           --query 'data.id' --raw-output 2>&1)" || true
         if [[ "$create_out" =~ ^ocid1\. ]]; then
-          info "OCIR repository '${repo_path}' created in app compartment."
+          info "OCIR repository '${repo_path}' created in compartment '${app_compartment_name:-$app_compartment_id}'."
         elif [[ "$create_out" == *"Repository already exists"* || "$create_out" == *"NAMESPACE_CONFLICT"* ]]; then
           info "OCIR repository '${repo_path}' already exists (reusing existing)."
         else
           [[ -n "$create_out" ]] && echo "$create_out" >&2
-          warn "Could not create OCIR repository '${repo_path}' in app compartment (check permissions). Push may create it in tenancy root; if function fails to pull (502), create the repository in the app compartment and re-push."
+          warn "Could not create OCIR repository '${repo_path}' in compartment '${app_compartment_name:-$app_compartment_id}' (check permissions). Push may create it in tenancy root; if function fails to pull (502), create the repository in the app compartment and re-push."
         fi
       else
-        info "OCIR repository '${repo_path}' already exists in app compartment."
+        info "OCIR repository '${repo_path}' already exists in compartment '${app_compartment_name:-$app_compartment_id}' (reusing existing)."
       fi
     done
   else
     warn "Could not get Functions app compartment; OCIR repositories may be created in tenancy root on first push."
   fi
 
-  if confirm "Create a new OCIR auth token now (recommended if you don't have one yet)?" "n"; then
-    create_ocir_auth_token || true
-  fi
-
-  info "Logging in to OCIR: ${region_key}.ocir.io"
-  ocir_docker_login "${region_key}" "${namespace}" "${OCIR_AUTH_TOKEN:-}"
-  OCIR_AUTH_TOKEN=""  # clear after use
+  ocir_login "${region_key}"
 
   info "Pulling prebuilt images from Docker Hub (${arch_tag})"
-  docker pull "mikarinneoracle/oci-copy-usage-report:${arch_tag}"
-  docker pull "mikarinneoracle/oci-xtenancy-check:${arch_tag}"
+  "${CONTAINER_CMD}" pull "mikarinneoracle/oci-copy-usage-report:${arch_tag}"
+  "${CONTAINER_CMD}" pull "mikarinneoracle/oci-xtenancy-check:${arch_tag}"
 
   info "Tagging images for OCIR: ${registry} (${arch_tag})"
-  docker tag "mikarinneoracle/oci-copy-usage-report:${arch_tag}" "${registry}/oci-copy-usage-report:${arch_tag}"
-  docker tag "mikarinneoracle/oci-xtenancy-check:${arch_tag}" "${registry}/oci-xtenancy-check:${arch_tag}"
+  "${CONTAINER_CMD}" tag "mikarinneoracle/oci-copy-usage-report:${arch_tag}" "${registry}/oci-copy-usage-report:${arch_tag}"
+  "${CONTAINER_CMD}" tag "mikarinneoracle/oci-xtenancy-check:${arch_tag}" "${registry}/oci-xtenancy-check:${arch_tag}"
 
   info "Pushing images to OCIR (${arch_tag})"
   push_ocir_with_retry() {
     local img="$1"
     local push_out tmp
     tmp="$(mktemp)"
-    if docker push "$img" 2>&1 | tee "$tmp"; then
+    if "${CONTAINER_CMD}" push "$img" 2>&1 | tee "$tmp"; then
       rm -f "$tmp"
       return 0
     fi
@@ -898,7 +938,7 @@ install_prebuilt_with_fn() {
       warn "Push failed (auth); token may need a moment to propagate. Retrying in 10s..."
       sleep 10
       info "Retrying push: $img"
-      docker push "$img" || { echo "$push_out" >&2; return 1; }
+      "${CONTAINER_CMD}" push "$img" || { echo "$push_out" >&2; return 1; }
     else
       echo "$push_out" >&2
       return 1
@@ -907,43 +947,26 @@ install_prebuilt_with_fn() {
   push_ocir_with_retry "${registry}/oci-copy-usage-report:${arch_tag}" || error "Failed to push oci-copy-usage-report image."
   push_ocir_with_retry "${registry}/oci-xtenancy-check:${arch_tag}" || error "Failed to push oci-xtenancy-check image."
 
-  # Ensure the target Object Storage bucket exists (function will fail with BucketNotFound otherwise).
-  local app_compartment_id ns
-  app_compartment_id="$(run_oci fn application get --application-id "$FN_APP_ID" --query 'data."compartment-id"' --raw-output 2>/dev/null || true)"
-  ns="$(detect_default_namespace || true)"
-  [[ -z "$ns" ]] && ns="$(run_oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
-  if [[ -n "$app_compartment_id" && -n "$ns" ]]; then
-    if ! run_oci os bucket get --namespace-name "$ns" --name "$bucket_name" >/dev/null 2>&1; then
-      info "Creating Object Storage bucket '${bucket_name}' in namespace '${ns}' (compartment of the Functions application)..."
-      if run_oci os bucket create \
-        --namespace-name "$ns" \
-        --compartment-id "$app_compartment_id" \
-        --name "$bucket_name" \
-        --query 'data.id' --raw-output >/dev/null 2>&1; then
-        info "Bucket '${bucket_name}' created."
-      else
-        warn "Could not create bucket '${bucket_name}'. Ensure it exists and the Functions dynamic group has access, or the copyusagereport function will fail with BucketNotFound."
-      fi
-    else
-      info "Bucket '${bucket_name}' already exists in namespace '${ns}'."
-    fi
-  else
-    warn "Could not resolve compartment or namespace; skipping bucket check. Ensure bucket '${bucket_name}' exists or copyusagereport will fail with BucketNotFound."
-  fi
-
-  # Secret and PAR: after bucket exists so PAR can be created on it; par_url is passed into copyusagereport config.
-  secret="$(prompt_default 'Enter secret (leave empty to skip xtenancycheck deployment)' "")"
+  # Secret and PAR: no secret → prompt target bucket only. With secret → show PAR options first; option 1 prompts bucket for PAR, sets bucket_name, and we ensure bucket exists; option 2 uses existing PAR, bucket_name from .env default, skip bucket creation.
+  secret="$(prompt_default 'Enter secret (leave empty to skip xtenancycheck deployment and just to use a local bucket for the reports)' "")"
   secret="$(printf '%s' "$secret" | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  local skip_bucket_ensure=false
+  if [[ -z "$secret" ]]; then
+    bucket_name="$(prompt_default 'Enter target bucket name for copyusagereport' "${BUCKET_NAME:-copyusagereport}")"
+    [[ -z "$bucket_name" ]] && bucket_name="copyusagereport"
+  fi
   if [[ -n "$secret" ]]; then
     echo
     info "PAR for cross-tenancy upload (copyusagereport will use this to write to the other tenancy's bucket):"
-    echo "  1) Create a new PAR for cross-tenancy upload and add it to copyusagereport config"
+    echo "  1) Create a new PAR with bucket for cross-tenancy upload and add it to copyusagereport config"
     echo "  2) Use existing PAR (enter URL) and add it to copyusagereport config"
-    echo "  3) Skip (configure PAR later)"
-    local par_choice par_days ns_par par_expiry par_name access_uri
-    par_choice="$(prompt_default 'Enter choice (1/2/3)' '3')"
+    local par_choice par_days ns_par par_expiry par_name access_uri par_bucket
+    par_choice="$(prompt_default 'Enter choice (1/2)' '1')"
     case "$(printf '%s' "$par_choice" | tr '[:upper:]' '[:lower:]')" in
       1)
+        par_bucket="$(prompt_default 'Enter bucket name for PAR' "${BUCKET_NAME:-copyusagereport}")"
+        [[ -z "$par_bucket" ]] && par_bucket="copyusagereport"
+        bucket_name="$par_bucket"
         info "Creating bucket-level PAR for cross-tenancy uploads (AnyObjectWrite)..."
         par_days="$(prompt_default 'Enter PAR validity in days' "${PAR_TTL_DAYS:-365}")"
         par_days="$((par_days + 0))"
@@ -958,7 +981,7 @@ install_prebuilt_with_fn() {
           access_uri="$(
             run_oci os preauth-request create \
               --namespace-name "$ns_par" \
-              --bucket-name "$bucket_name" \
+              --bucket-name "$par_bucket" \
               --name "$par_name" \
               --access-type AnyObjectWrite \
               --time-expires "$par_expiry" \
@@ -967,7 +990,7 @@ install_prebuilt_with_fn() {
           )"
           if [[ -n "$access_uri" && "$access_uri" != "null" ]]; then
             par_url="https://objectstorage.${region_key}.oraclecloud.com${access_uri}"
-            info "PAR created for bucket '${bucket_name}' (namespace '${ns_par}'). Expires: ${par_expiry}"
+            info "PAR created for bucket '${par_bucket}' (namespace '${ns_par}'). Expires: ${par_expiry}"
             echo "PAR URL (share with the other tenancy): ${par_url}"
           else
             warn "Failed to create PAR via OCI CLI. Create it in OCI Console or use option 2 with an existing PAR."
@@ -979,9 +1002,39 @@ install_prebuilt_with_fn() {
         if [[ -z "$par_url" ]]; then
           warn "No PAR URL entered."
         fi
+        bucket_name="${BUCKET_NAME:-copyusagereport}"
+        [[ -z "$bucket_name" ]] && bucket_name="copyusagereport"
+        skip_bucket_ensure=true
         ;;
-      *) ;;
     esac
+  fi
+
+  # Ensure the target Object Storage bucket exists (function will fail with BucketNotFound otherwise). Skip when option 2 (existing PAR) was chosen.
+  if [[ "$skip_bucket_ensure" != "true" ]]; then
+    local app_compartment_id ns
+    app_compartment_id="$(run_oci fn application get --application-id "$FN_APP_ID" --query 'data."compartment-id"' --raw-output 2>/dev/null || true)"
+    ns="$(detect_default_namespace || true)"
+    [[ -z "$ns" ]] && ns="$(run_oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
+    if [[ -n "$app_compartment_id" && -n "$ns" ]]; then
+      if ! run_oci os bucket get --namespace-name "$ns" --name "$bucket_name" >/dev/null 2>&1; then
+        info "Creating Object Storage bucket '${bucket_name}' in namespace '${ns}' (compartment of the Functions application)..."
+        if run_oci os bucket create \
+          --namespace-name "$ns" \
+          --compartment-id "$app_compartment_id" \
+          --name "$bucket_name" \
+          --query 'data.id' --raw-output >/dev/null 2>&1; then
+          info "Bucket '${bucket_name}' created."
+        else
+          warn "Could not create bucket '${bucket_name}'. Ensure it exists and the Functions dynamic group has access, or the copyusagereport function will fail with BucketNotFound."
+        fi
+      else
+        info "Bucket '${bucket_name}' already exists in namespace '${ns}'."
+      fi
+    else
+      warn "Could not resolve compartment or namespace; skipping bucket check. Ensure bucket '${bucket_name}' exists or copyusagereport will fail with BucketNotFound."
+    fi
+  else
+    info "Using existing PAR; skipping bucket creation. Ensure bucket '${bucket_name}' exists in this tenancy for copyusagereport."
   fi
 
   # Build config for copyusagereport function (includes PAR if set earlier).
@@ -1153,12 +1206,17 @@ main() {
     choice="$(prompt_default 'Enter choice' "${INSTALLER_CHOICE:-1}")"
     case "$choice" in
       1|"")
+        INSTALLER_ENV=cloud_shell
         info "Using OCI Cloud Shell; skipping CLI config setup (default config will be used)."
+        if confirm "Free space with 'docker system prune -a' before continuing? (removes unused images, containers, networks)" "n"; then
+          docker system prune -a || true
+        fi
         prechecks
         # Leave OCI_CLI_CONFIG_PATH and OCI_CLI_PROFILE_NAME unset so oci/fn use environment defaults.
         break
         ;;
       "2")
+        INSTALLER_ENV=localhost
         info "Using localhost; configuring OCI CLI config path and profile."
         prechecks
         setup_oci_cli_context
@@ -1178,4 +1236,3 @@ main() {
 }
 
 main "$@"
-
