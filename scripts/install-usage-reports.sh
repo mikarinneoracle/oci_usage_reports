@@ -937,7 +937,7 @@ ocir_login_cloud_shell() {
     info "Reusing existing token; skipping propagation wait."
   fi
   
-  # 5) Login to OCIR with format: namespace/domain/username and auth token (retry up to 3 times)
+  # 5) Login to OCIR with format: namespace/domain/username and auth token (try initially, then retry up to 2 more times)
   local attempt
   for attempt in 1 2 3; do
     info "Logging in to OCIR (${host}) with username '${user}' (attempt ${attempt}/3)..."
@@ -953,7 +953,25 @@ ocir_login_cloud_shell() {
     fi
   done
   
-  error "${CONTAINER_CMD} login to OCIR failed after 3 attempts. Token may need more time to propagate; wait 1-2 minutes and retry manually."
+  # After max retries, try manual login fallback
+  warn "${CONTAINER_CMD} login to OCIR failed after 3 attempts. Trying manual login fallback..."
+  local manual_user manual_token
+  manual_user="$(prompt_default 'Enter OCIR username (format: namespace/domain/username)' "${OCIR_AUTH_TOKEN_USER:-$user}")"
+  [[ -z "$manual_user" ]] && error "OCIR username is required."
+  read -s -p "Enter OCIR auth token (will not be echoed): " manual_token || true
+  echo
+  [[ -z "$manual_token" ]] && error "OCIR auth token is required."
+  
+  info "Logging in to OCIR (${host}) with manual credentials..."
+  if "${CONTAINER_CMD}" login "$host" -u "$manual_user" -p "$manual_token" 2>/dev/null; then
+    info "${CONTAINER_CMD} login to OCIR succeeded with manual credentials."
+    # Store manual token for use in push
+    token="$manual_token"
+    OCIR_AUTH_TOKEN_USER="$manual_user"
+    return 0
+  else
+    error "${CONTAINER_CMD} login to OCIR failed with manual credentials. Check username and token."
+  fi
 }
 
 ocir_login_localhost() {
