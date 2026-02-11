@@ -193,7 +193,7 @@ delete_functions() {
   # Get pattern from .env (default to VCN_NAME or OCIR_REPO_NAME, remove -app suffix if present)
   local app_pattern="${APP_NAME:-${VCN_NAME:-${OCIR_REPO_NAME:-oci-usage-reports}}}"
   app_pattern="${app_pattern%-app}"  # Remove -app suffix if present
-  app_pattern="${app_pattern,,}"  # Convert to lowercase
+  app_pattern="$(printf '%s' "$app_pattern" | tr '[:upper:]' '[:lower:]')"  # Convert to lowercase
   
   info "Searching for Functions applications with name matching '${app_pattern}*'..."
   
@@ -281,7 +281,7 @@ delete_ocir_repos() {
   
   # Get pattern from .env
   local repo_pattern="${OCIR_REPO_NAME:-oci-usage-reports}"
-  repo_pattern="${repo_pattern,,}"  # Convert to lowercase
+  repo_pattern="$(printf '%s' "$repo_pattern" | tr '[:upper:]' '[:lower:]')"  # Convert to lowercase
   
   info "Searching for OCIR repositories with name matching '${repo_pattern}*'..."
   
@@ -336,7 +336,7 @@ delete_networks() {
   
   # Get pattern from .env
   local vcn_pattern="${VCN_NAME:-oci-usage-reports}"
-  vcn_pattern="${vcn_pattern,,}"  # Convert to lowercase
+  vcn_pattern="$(printf '%s' "$vcn_pattern" | tr '[:upper:]' '[:lower:]')"  # Convert to lowercase
   
   info "Searching for VCNs with name matching '${vcn_pattern}*'..."
   
@@ -371,7 +371,7 @@ except Exception:
     info "  Searching for subnets in VCN..."
     local subnet_pattern="${SUBNET_NAME:-${vcn_pattern}-private}"
     subnet_pattern="${subnet_pattern%-private}"  # Remove -private suffix if present
-    subnet_pattern="${subnet_pattern,,}"  # Convert to lowercase
+    subnet_pattern="$(printf '%s' "$subnet_pattern" | tr '[:upper:]' '[:lower:]')"  # Convert to lowercase
     
     local subnets
     subnets="$(run_oci network subnet list \
@@ -506,7 +506,7 @@ delete_buckets() {
   
   # Get pattern from .env
   local bucket_pattern="${BUCKET_NAME:-copyusagereport}"
-  bucket_pattern="${bucket_pattern,,}"  # Convert to lowercase
+  bucket_pattern="$(printf '%s' "$bucket_pattern" | tr '[:upper:]' '[:lower:]')"  # Convert to lowercase
   
   info "Searching for Object Storage buckets with name matching '${bucket_pattern}*'..."
   
