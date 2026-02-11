@@ -159,22 +159,16 @@ detect_tenancy_ocid() {
 }
 
 get_compartment_id() {
-  local compartment_input="$1"
+  local compartment_name="$1"
   local tenancy_ocid="$2"
   
-  # If it looks like an OCID, use it directly
-  if [[ "$compartment_input" =~ ^ocid1\. ]]; then
-    echo "$compartment_input"
-    return 0
-  fi
-  
-  # Otherwise, search by name
+  # Search by name only
   local compartment_id
   compartment_id="$(run_oci iam compartment list \
     --compartment-id "$tenancy_ocid" \
     --compartment-id-in-subtree true \
     --all \
-    --query "data[?\"name\"=='${compartment_input}'].id | [0]" \
+    --query "data[?\"name\"=='${compartment_name}'].id | [0]" \
     --raw-output 2>/dev/null || true)"
   
   if [[ -n "$compartment_id" && "$compartment_id" != "null" ]]; then
@@ -741,7 +735,7 @@ try:
     print(len(data))
 except Exception:
     print(0)
-" 2>/dev/null || echo "0")"
+" 2>/dev/null | tr -d '[:space:]' || echo "0")"
     
     local remaining_versions
     remaining_versions="$(run_oci os object list \
@@ -756,9 +750,13 @@ try:
     print(len(data))
 except Exception:
     print(0)
-" 2>/dev/null || echo "0")"
+" 2>/dev/null | tr -d '[:space:]' || echo "0")"
     
-    if [[ "$remaining_objects" != "0" || "$remaining_versions" != "0" ]]; then
+    # Convert to integers for comparison
+    remaining_objects=$((remaining_objects + 0))
+    remaining_versions=$((remaining_versions + 0))
+    
+    if [[ $remaining_objects -gt 0 || $remaining_versions -gt 0 ]]; then
       warn "  ✗ Bucket ${bucket_name} still contains ${remaining_objects} object(s) and ${remaining_versions} version(s). Cannot delete."
       continue
     fi
@@ -818,20 +816,20 @@ main() {
   fi
   
   # Get compartment
-  local compartment_input compartment_id compartment_name
+  local compartment_name compartment_id
   while true; do
-    compartment_input="$(prompt_default 'Enter compartment name or OCID' "${COMPARTMENT_NAME:-}")"
-    if [[ -z "$compartment_input" ]]; then
-      warn "Compartment name or OCID cannot be empty."
+    compartment_name="$(prompt_default 'Enter compartment name' "${COMPARTMENT_NAME:-}")"
+    if [[ -z "$compartment_name" ]]; then
+      warn "Compartment name cannot be empty."
       continue
     fi
     break
   done
   
-  info "Resolving compartment '${compartment_input}'..."
-  compartment_id="$(get_compartment_id "$compartment_input" "$tenancy_ocid" || true)"
+  info "Resolving compartment '${compartment_name}'..."
+  compartment_id="$(get_compartment_id "$compartment_name" "$tenancy_ocid" || true)"
   if [[ -z "$compartment_id" ]]; then
-    error "Could not find compartment with name '${compartment_input}' under tenancy '${tenancy_ocid}'. Check the name or OCID."
+    error "Could not find compartment with name '${compartment_name}' under tenancy '${tenancy_ocid}'. Check the name."
   fi
   
   compartment_name="$(run_oci iam compartment get --compartment-id "$compartment_id" --query 'data.name' --raw-output 2>/dev/null || true)"
