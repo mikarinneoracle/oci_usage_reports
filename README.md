@@ -28,22 +28,6 @@ The `xtenancycheck` function validates uploaded files in Object Storage by check
 - **copyusagereport**: Run on demand or schedule via [OCI Resource Scheduler](https://docs.oracle.com/en-us/iaas/Content/Functions/Tasks/functionsscheduling.htm) (e.g. daily).
 - **xtenancycheck**: Triggered by Object Storage bucket **Object - Create** (and optionally **Object - Update**) events. Configure an event rule in OCI Events Service pointing to the target bucket and the `xtenancycheck` function.
 
-### Multi-tenancy Cross-Tenancy Setup
-
-When setting up **cross-tenancy reports**, you may want to:
-
-- **Deploy both functions (`copyusagereport` and `xtenancycheck`) into each participating tenancy**, and
-- **Share a common `secret` value and bucket-level PAR URL between those tenancies.**
-
-In this pattern:
-
-- One tenancy **hosts the destination reports bucket** and the **PAR** (created on that bucket).
-- All other tenancies:
-  - Deploy their own `copyusagereport` and `xtenancycheck` functions.
-  - Configure the **same `secret`** and **same PAR URL** on their `copyusagereport` function.
-  - Configure the **same `secret`** on their `xtenancycheck` function that protects the destination bucket.
-
-As a result, **multiple tenancies** can upload reports into the **same bucket** (in the PAR-hosting tenancy), while `xtenancycheck` enforces the shared secret prefix. This setup requires you to have **credentials and permissions in all involved tenancies** (one hosting the reports bucket and any number of “source” tenancies).
 
 ### Authentication and Deployment
 
