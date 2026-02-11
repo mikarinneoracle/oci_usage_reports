@@ -680,14 +680,20 @@ except Exception:
     info "Deleting bucket: ${bucket_name}"
     
     # First, delete all objects in the bucket
-    info "  Deleting objects in bucket..."
+    info "  Listing objects in bucket..."
     local objects_deleted=0
     local objects
-    objects="$(run_oci os object list \
+    local list_error
+    list_error="$(run_oci os object list \
       --bucket-name "$bucket_name" \
       --namespace-name "$namespace" \
       --all \
-      --output json 2>/dev/null | python3 -c "
+      --output json 2>&1)"
+    
+    if [[ $? -ne 0 ]]; then
+      warn "    Failed to list objects: ${list_error}"
+    else
+      objects="$(echo "$list_error" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin).get('data', {}).get('objects', [])
@@ -695,34 +701,51 @@ try:
         name = obj.get('name') or ''
         if name:
             print(name)
-except Exception:
+except Exception as e:
     pass
 " 2>/dev/null || true)"
-    
-    if [[ -n "$objects" ]]; then
-      while IFS= read -r object_name; do
-        [[ -z "$object_name" ]] && continue
-        if run_oci os object delete \
-          --bucket-name "$bucket_name" \
-          --namespace-name "$namespace" \
-          --object-name "$object_name" \
-          --force >/dev/null 2>&1; then
-          objects_deleted=$((objects_deleted + 1))
+      
+      if [[ -n "$objects" ]]; then
+        local object_count
+        object_count="$(echo "$objects" | wc -l | tr -d ' ')"
+        info "    Found ${object_count} object(s) to delete..."
+        while IFS= read -r object_name; do
+          [[ -z "$object_name" ]] && continue
+          local delete_err
+          delete_err="$(run_oci os object delete \
+            --bucket-name "$bucket_name" \
+            --namespace-name "$namespace" \
+            --object-name "$object_name" \
+            --force 2>&1)"
+          if [[ $? -eq 0 ]]; then
+            objects_deleted=$((objects_deleted + 1))
+          else
+            warn "      Failed to delete object '${object_name}': ${delete_err}"
+          fi
+        done <<< "$objects"
+        if [[ $objects_deleted -gt 0 ]]; then
+          info "    ✓ Deleted ${objects_deleted} object(s)"
         fi
-      done <<< "$objects"
-      if [[ $objects_deleted -gt 0 ]]; then
-        info "    ✓ Deleted ${objects_deleted} object(s)"
+      else
+        info "    Bucket is empty (no objects found)"
       fi
     fi
     
     # Also delete object versions if versioning is enabled
+    info "  Listing object versions..."
     local versions
-    versions="$(run_oci os object list \
+    local versions_error
+    versions_error="$(run_oci os object list \
       --bucket-name "$bucket_name" \
       --namespace-name "$namespace" \
       --all \
       --versions \
-      --output json 2>/dev/null | python3 -c "
+      --output json 2>&1)"
+    
+    if [[ $? -ne 0 ]]; then
+      warn "    Failed to list object versions: ${versions_error}"
+    else
+      versions="$(echo "$versions_error" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin).get('data', {}).get('objects', [])
@@ -734,22 +757,30 @@ try:
 except Exception:
     pass
 " 2>/dev/null || true)"
-    
-    if [[ -n "$versions" ]]; then
-      local versions_deleted=0
-      while IFS='|' read -r object_name version_id; do
-        [[ -z "$object_name" ]] || [[ -z "$version_id" ]] && continue
-        if run_oci os object delete \
-          --bucket-name "$bucket_name" \
-          --namespace-name "$namespace" \
-          --object-name "$object_name" \
-          --version-id "$version_id" \
-          --force >/dev/null 2>&1; then
-          versions_deleted=$((versions_deleted + 1))
+      
+      if [[ -n "$versions" ]]; then
+        local version_count
+        version_count="$(echo "$versions" | wc -l | tr -d ' ')"
+        info "    Found ${version_count} object version(s) to delete..."
+        local versions_deleted=0
+        while IFS='|' read -r object_name version_id; do
+          [[ -z "$object_name" ]] || [[ -z "$version_id" ]] && continue
+          local delete_err
+          delete_err="$(run_oci os object delete \
+            --bucket-name "$bucket_name" \
+            --namespace-name "$namespace" \
+            --object-name "$object_name" \
+            --version-id "$version_id" \
+            --force 2>&1)"
+          if [[ $? -eq 0 ]]; then
+            versions_deleted=$((versions_deleted + 1))
+          else
+            warn "      Failed to delete version '${object_name}' (${version_id}): ${delete_err}"
+          fi
+        done <<< "$versions"
+        if [[ $versions_deleted -gt 0 ]]; then
+          info "    ✓ Deleted ${versions_deleted} object version(s)"
         fi
-      done <<< "$versions"
-      if [[ $versions_deleted -gt 0 ]]; then
-        info "    ✓ Deleted ${versions_deleted} object version(s)"
       fi
     fi
     
