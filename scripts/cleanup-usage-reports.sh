@@ -564,7 +564,7 @@ except Exception:
         
         info "Deleting PAR: ${par_name} (bucket: ${bucket_name})"
         if run_oci os preauth-request delete \
-          --namespace-name "$namespace" \
+          --bucket-name "$bucket_name" \
           --par-id "$par_id" \
           --force >/dev/null 2>&1; then
           info "  ✓ PAR deleted: ${par_name}"
