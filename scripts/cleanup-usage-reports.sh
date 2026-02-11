@@ -702,15 +702,21 @@ except Exception:
     fi
     
     # Now delete the bucket itself
-    if run_oci os bucket delete \
+    local delete_error
+    delete_error="$(run_oci os bucket delete \
       --bucket-name "$bucket_name" \
       --namespace-name "$namespace" \
-      --force >/dev/null 2>&1; then
+      --force 2>&1)"
+    
+    if [[ $? -eq 0 ]]; then
       info "  ✓ Bucket deleted: ${bucket_name}"
       deleted_resources+=("Bucket: ${bucket_name}")
       deleted_count=$((deleted_count + 1))
     else
       warn "  ✗ Failed to delete bucket ${bucket_name}."
+      if [[ -n "$delete_error" ]]; then
+        warn "    Error: ${delete_error}"
+      fi
     fi
   done <<< "$buckets"
   
