@@ -121,7 +121,7 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 10. **xtenancycheck (optional)** – If a secret was set, offers to deploy xtenancycheck with the same secret.
 11. **Quick test (optional)** – Can invoke copyusagereport and run a short xtenancycheck test (upload/delete object with secret prefix).
 
-After deployment, schedule **copyusagereport** (e.g. via OCI Resource Scheduler) and attach **xtenancycheck** to the bucket’s Object Storage events (see [Multi-tenancy](#multi-tenancy-cross-tenancy-setup) and the linked docs).
+After deployment, schedule **copyusagereport** (e.g. via OCI Resource Scheduler) and attach **xtenancycheck** to the bucket’s Object Storage events (see [Deployment Scenarios](#deployment-scenarios) and the linked docs).
 
 ## Documentation
 
