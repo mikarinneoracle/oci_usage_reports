@@ -441,7 +441,7 @@ except Exception:
         break
       fi
       warn "A VCN with name '${vcn_name}' already exists in compartment '${compartment_name}'."
-      if ! confirm "Enter a different VCN name? (N = go back to create/select choice)" "y"; then
+      if ! confirm "Enter a different VCN name? (n = go back to create/select choice)" "y"; then
         break
       fi
     done
@@ -778,7 +778,7 @@ ocir_login_cloud_shell() {
   local region_key="$1"
   local namespace="$2"
   local host="${region_key}.ocir.io"
-  local user_ocid domain_segment user_raw user prefix token desc tenancy_ocid domains_array i n custom_opt domain_choice default_user_login
+  local user_ocid domain_segment domain_segment_lower user_raw user prefix token desc tenancy_ocid domains_array i n custom_opt domain_choice default_user_login
   
   info "OCIR login for Cloud Shell (using auth token)"
   
@@ -789,72 +789,102 @@ ocir_login_cloud_shell() {
     [[ -z "$namespace" ]] && error "Could not determine Object Storage namespace for OCIR login."
   fi
   
-  # 1) Prompt for username (default from .env: OCIR_USER)
-  user_raw="$(prompt_default 'Enter OCIR username (user part only)' "${OCIR_USER:-}")"
-  [[ -z "$user_raw" ]] && error "OCIR username is required."
-  
-  # 2) Show identity domains in tenancy root to select
+  # Get tenancy OCID once (needed for domain listing and user lookup)
   tenancy_ocid="$(detect_tenancy_ocid || true)"
   [[ -z "$tenancy_ocid" ]] && error "Could not detect tenancy OCID."
   
-  domains_array=()
-  while IFS= read -r line; do
-    line="$(printf '%s' "$line" | tr -d '[:space:]')"
-    [[ -z "$line" ]] && continue
-    [[ "$line" == "[]" || "$line" == "null" ]] && continue
-    domains_array+=("$line")
-  done < <(list_identity_domain_names "${tenancy_ocid}" "${region_key}" 2>/dev/null || true)
-  
-  if [[ ${#domains_array[@]} -gt 0 ]]; then
-    info "Select identity domain for OCIR username (from tenancy root compartment or custom):"
-    n=0
-    for i in "${domains_array[@]}"; do
-      [[ -z "$i" ]] && continue
-      n=$((n + 1))
-      echo "  ${n}) ${i}"
-    done
-    custom_opt=$((n + 1))
-    echo "  ${custom_opt}) Custom domain"
-    while true; do
+  # Retry loop: prompt for username and domain, then lookup user OCID
+  while true; do
+    # 1) Prompt for username (default from .env: OCIR_USER)
+    user_raw="$(prompt_default 'Enter OCIR username (user part only)' "${OCIR_USER:-}")"
+    [[ -z "$user_raw" ]] && error "OCIR username is required."
+    
+    # 2) Show identity domains in tenancy root to select
+    domains_array=()
+    while IFS= read -r line; do
+      line="$(printf '%s' "$line" | tr -d '[:space:]')"
+      [[ -z "$line" ]] && continue
+      [[ "$line" == "[]" || "$line" == "null" ]] && continue
+      domains_array+=("$line")
+    done < <(list_identity_domain_names "${tenancy_ocid}" "${region_key}" 2>/dev/null || true)
+    
+    if [[ ${#domains_array[@]} -gt 0 ]]; then
+      info "Select identity domain for OCIR username (from tenancy root compartment or custom):"
+      n=0
+      for i in "${domains_array[@]}"; do
+        [[ -z "$i" ]] && continue
+        n=$((n + 1))
+        echo "  ${n}) ${i}"
+      done
+      custom_opt=$((n + 1))
+      echo "  ${custom_opt}) Custom domain"
+      while true; do
+        domain_choice="$(prompt_default 'Enter choice' '1')"
+        if [[ "$domain_choice" == "$custom_opt" ]] || [[ "$domain_choice" == "custom" ]] || [[ "$domain_choice" == "Custom" ]]; then
+          domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
+          break
+        fi
+        if [[ "$domain_choice" =~ ^[0-9]+$ ]] && [[ "$domain_choice" -ge 1 ]] && [[ "$domain_choice" -le "$n" ]]; then
+          domain_segment="${domains_array[$((domain_choice - 1))]}"
+          break
+        fi
+        warn "Invalid choice. Enter 1-${n} for a domain or ${custom_opt} for custom."
+      done
+    else
+      info "Select identity domain for OCIR username:"
+      echo "  1) oracleidentitycloudservice (default for IDCS-backed tenancies)"
+      echo "  2) Custom domain"
       domain_choice="$(prompt_default 'Enter choice' '1')"
-      if [[ "$domain_choice" == "$custom_opt" ]] || [[ "$domain_choice" == "custom" ]] || [[ "$domain_choice" == "Custom" ]]; then
-        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
-        break
+      case "$domain_choice" in
+        1|"")
+          domain_segment="oracleidentitycloudservice"
+          ;;
+        2)
+          domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
+          ;;
+        *)
+          warn "Unknown choice '${domain_choice}', defaulting to 'oracleidentitycloudservice'."
+          domain_segment="oracleidentitycloudservice"
+          ;;
+      esac
+    fi
+    
+    domain_segment_lower="$(printf '%s' "$domain_segment" | tr '[:upper:]' '[:lower:]')"
+    prefix="${namespace}/${domain_segment_lower}"
+    user="${prefix}/${user_raw}"
+    
+    # 3) Try to find user OCID
+    user_ocid="$(detect_default_user_ocid || true)"
+    if [[ -z "$user_ocid" ]]; then
+      # Try to find user OCID by username (for Cloud Shell where CLI config may not have user OCID)
+      info "Looking up user OCID by username '${user_raw}' in tenancy..."
+      # Search in tenancy root compartment
+      # Try domain/username format first (most common)
+      user_ocid="$(oci iam user list --compartment-id "$tenancy_ocid" --all --name "${domain_segment_lower}/${user_raw}" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+      if [[ -z "$user_ocid" || "$user_ocid" == "null" ]]; then
+        # Try just username
+        user_ocid="$(oci iam user list --compartment-id "$tenancy_ocid" --all --name "${user_raw}" --query 'data[0].id' --raw-output 2>/dev/null || true)"
       fi
-      if [[ "$domain_choice" =~ ^[0-9]+$ ]] && [[ "$domain_choice" -ge 1 ]] && [[ "$domain_choice" -le "$n" ]]; then
-        domain_segment="${domains_array[$((domain_choice - 1))]}"
-        break
+      if [[ -z "$user_ocid" || "$user_ocid" == "null" ]]; then
+        # Try query filter for exact match
+        user_ocid="$(oci iam user list --compartment-id "$tenancy_ocid" --all --query "data[?name=='${domain_segment_lower}/${user_raw}'].id | [0]" --raw-output 2>/dev/null || true)"
+        if [[ -z "$user_ocid" || "$user_ocid" == "null" ]]; then
+          user_ocid="$(oci iam user list --compartment-id "$tenancy_ocid" --all --query "data[?name=='${user_raw}'].id | [0]" --raw-output 2>/dev/null || true)"
+        fi
       fi
-      warn "Invalid choice. Enter 1-${n} for a domain or ${custom_opt} for custom."
-    done
-  else
-    info "Select identity domain for OCIR username:"
-    echo "  1) oracleidentitycloudservice (default for IDCS-backed tenancies)"
-    echo "  2) Custom domain"
-    domain_choice="$(prompt_default 'Enter choice' '1')"
-    case "$domain_choice" in
-      1|"")
-        domain_segment="oracleidentitycloudservice"
-        ;;
-      2)
-        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
-        ;;
-      *)
-        warn "Unknown choice '${domain_choice}', defaulting to 'oracleidentitycloudservice'."
-        domain_segment="oracleidentitycloudservice"
-        ;;
-    esac
-  fi
-  
-  domain_segment_lower="$(printf '%s' "$domain_segment" | tr '[:upper:]' '[:lower:]')"
-  prefix="${namespace}/${domain_segment_lower}"
-  user="${prefix}/${user_raw}"
-  
-  # 3) Create auth token (description from .env: OCIR_TOKEN_DESCRIPTION)
-  user_ocid="$(detect_default_user_ocid || true)"
-  if [[ -z "$user_ocid" ]]; then
-    error "Could not detect user OCID. Ensure OCI CLI is configured or provide USER_OCID in .env."
-  fi
+    fi
+    
+    if [[ -n "$user_ocid" && "$user_ocid" != "null" ]]; then
+      info "Found user OCID: ${user_ocid}"
+      break
+    fi
+    
+    # User OCID not found - ask to retry
+    warn "Could not find user OCID. Tried: CLI config, username '${user_raw}', and '${domain_segment_lower}/${user_raw}'."
+    if ! confirm "Enter a different username and try again?" "y"; then
+      error "Could not detect user OCID. Provide USER_OCID in .env or ensure the username exists in the tenancy."
+    fi
+  done
   
   desc="$(prompt_default 'Enter description for new OCIR auth token' "${OCIR_TOKEN_DESCRIPTION:-oci-usage-reports-ocir-token}")"
   
