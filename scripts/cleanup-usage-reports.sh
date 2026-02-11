@@ -799,12 +799,18 @@ except Exception:
     
     # Verify bucket is empty before attempting deletion
     info "  Verifying bucket is empty..."
-    local remaining_check
-    remaining_check="$(run_oci os object list \
+    local remaining_check remaining_check_error
+    remaining_check_error="$(run_oci os object list \
       --bucket-name "$bucket_name" \
       --namespace-name "$namespace" \
       --all \
-      --output json 2>/dev/null | python3 -c "
+      --output json 2>&1)"
+    local remaining_check_exit_code=$?
+    
+    if [[ $remaining_check_exit_code -ne 0 ]]; then
+      warn "    Warning: Failed to verify bucket contents: ${remaining_check_error}"
+    else
+      remaining_check="$(echo "$remaining_check_error" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin).get('data', {}).get('objects', [])
@@ -812,22 +818,30 @@ try:
 except Exception:
     print(0)
 " 2>/dev/null | tr -d '[:space:]' || echo "0")"
-    
-    remaining_check=$((remaining_check + 0))
-    if [[ $remaining_check -gt 0 ]]; then
-      warn "  ✗ Cannot delete bucket ${bucket_name}: still contains ${remaining_check} object(s)."
-      warn "    Please delete objects manually or check permissions."
-      continue
+      
+      remaining_check=$((remaining_check + 0))
+      if [[ $remaining_check -gt 0 ]]; then
+        warn "  ✗ Cannot delete bucket ${bucket_name}: still contains ${remaining_check} object(s)."
+        warn "    Please delete objects manually or check permissions."
+        continue
+      fi
+      info "    Bucket verification: empty (0 objects)"
     fi
     
     # Now delete the bucket itself
     info "  Attempting to delete bucket..."
+    info "    Command: oci os bucket delete --bucket-name '${bucket_name}' --namespace-name '${namespace}' --force"
     local delete_error delete_exit_code
     delete_error="$(run_oci os bucket delete \
       --bucket-name "$bucket_name" \
       --namespace-name "$namespace" \
       --force 2>&1)"
     delete_exit_code=$?
+    
+    info "    Exit code: ${delete_exit_code}"
+    if [[ -n "$delete_error" ]]; then
+      info "    CLI output: ${delete_error}"
+    fi
     
     if [[ $delete_exit_code -eq 0 ]]; then
       info "  ✓ Bucket deleted: ${bucket_name}"
