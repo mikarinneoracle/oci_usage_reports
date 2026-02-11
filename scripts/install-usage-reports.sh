@@ -1081,46 +1081,55 @@ setup_dynamic_group_and_policies() {
   local matching_rule
   matching_rule="ALL {resource.type = 'fnfunc', resource.compartment.id = '${app_compartment_id}'}"
   
-  info "Creating dynamic group '${dyn_group_name}' in root compartment..."
-  local dyn_group_id dyn_group_output
-  dyn_group_output="$(run_oci iam dynamic-group create \
-    --compartment-id "$tenancy_ocid" \
-    --name "$dyn_group_name" \
-    --description "Dynamic group for OCI Usage Reports Functions (Resource Principal)" \
-    --matching-rule "$matching_rule" \
-    --output json 2>/dev/null || true)"
+  # Check if dynamic group already exists first
+  info "Checking for dynamic group '${dyn_group_name}' in root compartment..."
+  local dyn_group_id
+  dyn_group_id="$(run_oci iam dynamic-group list --compartment-id "$tenancy_ocid" --name "$dyn_group_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
   
-  if [[ -n "$dyn_group_output" ]]; then
-    dyn_group_id="$(echo "$dyn_group_output" | jq -r '.data.id // empty' 2>/dev/null || true)"
-    if [[ -n "$dyn_group_id" && "$dyn_group_id" != "null" ]]; then
-      info "Dynamic group '${dyn_group_name}' created (OCID: ${dyn_group_id})."
+  if [[ -n "$dyn_group_id" && "$dyn_group_id" != "null" ]]; then
+    info "Dynamic group '${dyn_group_name}' already exists (OCID: ${dyn_group_id})."
+  else
+    # Try to create it
+    info "Creating dynamic group '${dyn_group_name}'..."
+    local dyn_group_output
+    dyn_group_output="$(run_oci iam dynamic-group create \
+      --compartment-id "$tenancy_ocid" \
+      --name "$dyn_group_name" \
+      --description "Dynamic group for OCI Usage Reports Functions (Resource Principal)" \
+      --matching-rule "$matching_rule" \
+      --output json 2>/dev/null || true)"
+    
+    if [[ -n "$dyn_group_output" ]]; then
+      dyn_group_id="$(echo "$dyn_group_output" | jq -r '.data.id // empty' 2>/dev/null || true)"
+      if [[ -n "$dyn_group_id" && "$dyn_group_id" != "null" ]]; then
+        info "Dynamic group '${dyn_group_name}' created (OCID: ${dyn_group_id})."
+      else
+        # Check again if it was created or already exists
+        dyn_group_id="$(run_oci iam dynamic-group list --compartment-id "$tenancy_ocid" --name "$dyn_group_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+        if [[ -n "$dyn_group_id" && "$dyn_group_id" != "null" ]]; then
+          info "Dynamic group '${dyn_group_name}' already exists (OCID: ${dyn_group_id})."
+        else
+          warn "Failed to create dynamic group '${dyn_group_name}'. It may already exist or check permissions."
+        fi
+      fi
     else
-      # Check if it already exists
-      local existing_dyn_group
-      existing_dyn_group="$(run_oci iam dynamic-group list --compartment-id "$tenancy_ocid" --name "$dyn_group_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
-      if [[ -n "$existing_dyn_group" && "$existing_dyn_group" != "null" ]]; then
-        dyn_group_id="$existing_dyn_group"
+      # Check again if it exists (maybe creation failed because it already exists)
+      dyn_group_id="$(run_oci iam dynamic-group list --compartment-id "$tenancy_ocid" --name "$dyn_group_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+      if [[ -n "$dyn_group_id" && "$dyn_group_id" != "null" ]]; then
         info "Dynamic group '${dyn_group_name}' already exists (OCID: ${dyn_group_id})."
       else
-        warn "Failed to create or find dynamic group '${dyn_group_name}'. Check permissions."
-        return 0
+        warn "Failed to create dynamic group '${dyn_group_name}'. It may already exist or check permissions."
       fi
     fi
-  else
-    # Check if it already exists
-    local existing_dyn_group
-    existing_dyn_group="$(run_oci iam dynamic-group list --compartment-id "$tenancy_ocid" --name "$dyn_group_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
-    if [[ -n "$existing_dyn_group" && "$existing_dyn_group" != "null" ]]; then
-      dyn_group_id="$existing_dyn_group"
-      info "Dynamic group '${dyn_group_name}' already exists (OCID: ${dyn_group_id})."
-    else
-      warn "Failed to create dynamic group '${dyn_group_name}'. Check permissions."
-      return 0
-    fi
+  fi
+  
+  # Continue even if dyn_group_id is empty (user can fix manually)
+  if [[ -z "$dyn_group_id" || "$dyn_group_id" == "null" ]]; then
+    warn "Could not determine dynamic group ID. Continuing with policy setup..."
   fi
 
   # Create policies in app compartment
-  info "Creating IAM policies in compartment '${app_compartment_name:-$app_compartment_id}'..."
+  info "Checking for IAM policies in compartment '${app_compartment_name:-$app_compartment_id}'..."
   
   local policy_name="oci-usage-reports-policy"
   local policy_statements=(
@@ -1128,50 +1137,58 @@ setup_dynamic_group_and_policies() {
     "Allow dynamic-group ${dyn_group_name} to read objectstorage-namespace in compartment ${app_compartment_name:-id=${app_compartment_id}}"
   )
   
-  # Create policy statements JSON
-  local statements_json="["
-  local first=true
-  for stmt in "${policy_statements[@]}"; do
-    if [[ "$first" == "true" ]]; then
-      first=false
-    else
-      statements_json+=","
-    fi
-    statements_json+="\"${stmt}\""
-  done
-  statements_json+="]"
+  # Check if policy already exists first
+  local policy_id
+  policy_id="$(run_oci iam policy list --compartment-id "$app_compartment_id" --name "$policy_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
   
-  local policy_output
-  policy_output="$(run_oci iam policy create \
-    --compartment-id "$app_compartment_id" \
-    --name "$policy_name" \
-    --description "IAM policies for OCI Usage Reports Functions" \
-    --statements "$statements_json" \
-    --output json 2>/dev/null || true)"
-  
-  if [[ -n "$policy_output" ]]; then
-    local policy_id
-    policy_id="$(echo "$policy_output" | jq -r '.data.id // empty' 2>/dev/null || true)"
-    if [[ -n "$policy_id" && "$policy_id" != "null" ]]; then
-      info "Policy '${policy_name}' created (OCID: ${policy_id})."
-    else
-      # Check if it already exists
-      local existing_policy
-      existing_policy="$(run_oci iam policy list --compartment-id "$app_compartment_id" --name "$policy_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
-      if [[ -n "$existing_policy" && "$existing_policy" != "null" ]]; then
-        info "Policy '${policy_name}' already exists (OCID: ${existing_policy})."
-      else
-        warn "Failed to create policy '${policy_name}'. Check permissions."
-      fi
-    fi
+  if [[ -n "$policy_id" && "$policy_id" != "null" ]]; then
+    info "Policy '${policy_name}' already exists (OCID: ${policy_id})."
   else
-    # Check if it already exists
-    local existing_policy
-    existing_policy="$(run_oci iam policy list --compartment-id "$app_compartment_id" --name "$policy_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
-    if [[ -n "$existing_policy" && "$existing_policy" != "null" ]]; then
-      info "Policy '${policy_name}' already exists (OCID: ${existing_policy})."
+    # Try to create it
+    info "Creating policy '${policy_name}'..."
+    
+    # Create policy statements JSON
+    local statements_json="["
+    local first=true
+    for stmt in "${policy_statements[@]}"; do
+      if [[ "$first" == "true" ]]; then
+        first=false
+      else
+        statements_json+=","
+      fi
+      statements_json+="\"${stmt}\""
+    done
+    statements_json+="]"
+    
+    local policy_output
+    policy_output="$(run_oci iam policy create \
+      --compartment-id "$app_compartment_id" \
+      --name "$policy_name" \
+      --description "IAM policies for OCI Usage Reports Functions" \
+      --statements "$statements_json" \
+      --output json 2>/dev/null || true)"
+    
+    if [[ -n "$policy_output" ]]; then
+      policy_id="$(echo "$policy_output" | jq -r '.data.id // empty' 2>/dev/null || true)"
+      if [[ -n "$policy_id" && "$policy_id" != "null" ]]; then
+        info "Policy '${policy_name}' created (OCID: ${policy_id})."
+      else
+        # Check again if it was created or already exists
+        policy_id="$(run_oci iam policy list --compartment-id "$app_compartment_id" --name "$policy_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+        if [[ -n "$policy_id" && "$policy_id" != "null" ]]; then
+          info "Policy '${policy_name}' already exists (OCID: ${policy_id})."
+        else
+          warn "Failed to create policy '${policy_name}'. It may already exist or check permissions."
+        fi
+      fi
     else
-      warn "Failed to create policy '${policy_name}'. Check permissions."
+      # Check again if it exists (maybe creation failed because it already exists)
+      policy_id="$(run_oci iam policy list --compartment-id "$app_compartment_id" --name "$policy_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+      if [[ -n "$policy_id" && "$policy_id" != "null" ]]; then
+        info "Policy '${policy_name}' already exists (OCID: ${policy_id})."
+      else
+        warn "Failed to create policy '${policy_name}'. It may already exist or check permissions."
+      fi
     fi
   fi
   
