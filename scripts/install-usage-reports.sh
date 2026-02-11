@@ -789,6 +789,12 @@ ocir_login_cloud_shell() {
     [[ -z "$namespace" ]] && error "Could not determine Object Storage namespace for OCIR login."
   fi
   
+  # Ask if user wants to login to OCIR (default yes)
+  if ! confirm "Login to OCIR with temporary auth token?" "y"; then
+    info "Skipping OCIR login. Will rely on existing docker login in Cloud Shell."
+    return 0
+  fi
+  
   # Get tenancy OCID once (needed for domain listing and user lookup)
   tenancy_ocid="$(detect_tenancy_ocid || true)"
   [[ -z "$tenancy_ocid" ]] && error "Could not detect tenancy OCID."
@@ -888,31 +894,48 @@ ocir_login_cloud_shell() {
   
   desc="oci-usage-reports-ocir-token-temp"
   
-  info "Creating temporary OCIR auth token via OCI CLI to user's profile..."
+  # Check if token was already created (for retry scenarios) - reuse if same user
   local token_create_output token_id token_value
-  token_create_output="$(oci iam auth-token create \
-      --user-id "$user_ocid" \
-      --description "$desc" \
-      --output json 2>/dev/null || true)"
-  
-  if [[ -z "$token_create_output" ]]; then
-    error "Failed to create auth token via OCI CLI. Check your permissions and try manually from the OCI Console."
+  if [[ -n "${OCIR_AUTH_TOKEN_VALUE:-}" && -n "${OCIR_AUTH_TOKEN_USER:-}" && "$user" == "${OCIR_AUTH_TOKEN_USER}" ]]; then
+    info "Reusing existing OCIR auth token (token already created for this user)..."
+    token_value="${OCIR_AUTH_TOKEN_VALUE}"
+    token_id="${OCIR_AUTH_TOKEN_ID:-}"
+    # Still need user_ocid for cleanup
+    if [[ -z "${OCIR_AUTH_TOKEN_USER_OCID:-}" ]]; then
+      OCIR_AUTH_TOKEN_USER_OCID="$user_ocid"
+    fi
+  else
+    info "Creating temporary OCIR auth token via OCI CLI to user's profile..."
+    token_create_output="$(oci iam auth-token create \
+        --user-id "$user_ocid" \
+        --description "$desc" \
+        --output json 2>/dev/null || true)"
+    
+    if [[ -z "$token_create_output" ]]; then
+      error "Failed to create auth token via OCI CLI. Check your permissions and try manually from the OCI Console."
+    fi
+    
+    token_value="$(echo "$token_create_output" | jq -r '.data.token // empty' 2>/dev/null || true)"
+    token_id="$(echo "$token_create_output" | jq -r '.data.id // empty' 2>/dev/null || true)"
+    
+    if [[ -z "$token_value" || -z "$token_id" ]]; then
+      error "Failed to create auth token via OCI CLI. Check your permissions and try manually from the OCI Console."
+    fi
+    
+    # Store token ID, value, user OCID, and username globally so token can be reused or deleted after push
+    OCIR_AUTH_TOKEN_ID="$token_id"
+    OCIR_AUTH_TOKEN_USER_OCID="$user_ocid"
+    OCIR_AUTH_TOKEN_VALUE="$token_value"
+    OCIR_AUTH_TOKEN_USER="$user"
   fi
   
-  token_value="$(echo "$token_create_output" | jq -r '.data.token // empty' 2>/dev/null || true)"
-  token_id="$(echo "$token_create_output" | jq -r '.data.id // empty' 2>/dev/null || true)"
-  
-  if [[ -z "$token_value" || -z "$token_id" ]]; then
-    error "Failed to create auth token via OCI CLI. Check your permissions and try manually from the OCI Console."
+  # 4) Wait 60 seconds for token propagation (only if token was just created, not reused)
+  if [[ -z "${OCIR_AUTH_TOKEN_VALUE:-}" || "$user" != "${OCIR_AUTH_TOKEN_USER:-}" ]]; then
+    info "Waiting 60 seconds for token propagation..."
+    sleep 60
+  else
+    info "Reusing existing token; skipping propagation wait."
   fi
-  
-  # Store token ID and user OCID globally so token can be deleted after push
-  OCIR_AUTH_TOKEN_ID="$token_id"
-  OCIR_AUTH_TOKEN_USER_OCID="$user_ocid"
-  
-  # 4) Wait 60 seconds for token propagation
-  info "Waiting 60 seconds for token propagation..."
-  sleep 60
   
   # 5) Login to OCIR with format: namespace/domain/username and auth token (retry up to 3 times)
   local attempt
@@ -1125,8 +1148,51 @@ install_prebuilt_with_fn() {
       return 1
     fi
   }
-  push_ocir_with_retry "${registry}/oci-copy-usage-report:${arch_tag}" || error "Failed to push oci-copy-usage-report image."
-  push_ocir_with_retry "${registry}/oci-xtenancy-check:${arch_tag}" || error "Failed to push oci-xtenancy-check image."
+  
+  # Try pushing with automatic token
+  local copy_push_failed=false xten_push_failed=false
+  if ! push_ocir_with_retry "${registry}/oci-copy-usage-report:${arch_tag}"; then
+    copy_push_failed=true
+  fi
+  if ! push_ocir_with_retry "${registry}/oci-xtenancy-check:${arch_tag}"; then
+    xten_push_failed=true
+  fi
+  
+  # Fallback: if push failed and we're in Cloud Shell, ask for manual username/token
+  if [[ ("$copy_push_failed" == "true" || "$xten_push_failed" == "true") && "${INSTALLER_ENV:-}" == "cloud_shell" ]]; then
+    warn "Push failed after retries. Trying fallback: manual username and token."
+    local manual_user manual_token host="${region_key}.ocir.io"
+    # Extract username part from OCIR_AUTH_TOKEN_USER if available (format: namespace/domain/username)
+    local default_username="${OCIR_AUTH_TOKEN_USER:-}"
+    manual_user="$(prompt_default 'Enter OCIR username (format: namespace/domain/username)' "$default_username")"
+    [[ -z "$manual_user" ]] && error "OCIR username is required."
+    read -s -p "Enter OCIR auth token (will not be echoed): " manual_token || true
+    echo
+    [[ -z "$manual_token" ]] && error "OCIR auth token is required."
+    
+    info "Logging in to OCIR (${host}) with manual credentials..."
+    if "${CONTAINER_CMD}" login "$host" -u "$manual_user" -p "$manual_token" 2>/dev/null; then
+      info "${CONTAINER_CMD} login to OCIR succeeded with manual credentials."
+      info "Retrying push with manual credentials..."
+      if [[ "$copy_push_failed" == "true" ]]; then
+        if ! "${CONTAINER_CMD}" push "${registry}/oci-copy-usage-report:${arch_tag}" 2>&1; then
+          error "Failed to push oci-copy-usage-report image with manual credentials."
+        fi
+        info "oci-copy-usage-report pushed successfully."
+      fi
+      if [[ "$xten_push_failed" == "true" ]]; then
+        if ! "${CONTAINER_CMD}" push "${registry}/oci-xtenancy-check:${arch_tag}" 2>&1; then
+          error "Failed to push oci-xtenancy-check image with manual credentials."
+        fi
+        info "oci-xtenancy-check pushed successfully."
+      fi
+      info "Push succeeded with manual credentials."
+    else
+      error "${CONTAINER_CMD} login to OCIR failed with manual credentials. Check username and token."
+    fi
+  elif [[ "$copy_push_failed" == "true" || "$xten_push_failed" == "true" ]]; then
+    error "Push failed after retries. Check your OCIR permissions and try again."
+  fi
 
   # Delete the temporary auth token after successful push (Cloud Shell only)
   if [[ "${INSTALLER_ENV:-}" == "cloud_shell" && -n "${OCIR_AUTH_TOKEN_ID:-}" && -n "${OCIR_AUTH_TOKEN_USER_OCID:-}" ]]; then
@@ -1138,6 +1204,8 @@ install_prebuilt_with_fn() {
     fi
     unset OCIR_AUTH_TOKEN_ID
     unset OCIR_AUTH_TOKEN_USER_OCID
+    unset OCIR_AUTH_TOKEN_VALUE
+    unset OCIR_AUTH_TOKEN_USER
   fi
 
   # Secret and PAR: no secret → prompt target bucket only. With secret → show PAR options first; option 1 prompts bucket for PAR, sets bucket_name, and we ensure bucket exists; option 2 uses existing PAR, bucket_name from .env default, skip bucket creation.
