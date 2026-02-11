@@ -886,7 +886,6 @@ ocir_login_cloud_shell() {
     fi
     
     if [[ -n "$user_ocid" && "$user_ocid" != "null" ]]; then
-      info "Found user OCID: ${user_ocid}"
       break
     fi
     
@@ -904,14 +903,29 @@ ocir_login_cloud_shell() {
   echo
   [[ -z "$token_value" ]] && error "OCIR auth token is required."
   
-  # 4) Wait 60 seconds for token propagation before first login attempt
-  info "Waiting 60 seconds for token propagation..."
-  sleep 60
+  # 4) Try login immediately first
+  info "Command: ${CONTAINER_CMD} login ${host} -u '${user}' -p '***'"
+  local login_err tmp_login
+  tmp_login="$(mktemp)"
+  if "${CONTAINER_CMD}" login "$host" -u "$user" -p "$token_value" >"$tmp_login" 2>&1; then
+    rm -f "$tmp_login"
+    info "${CONTAINER_CMD} login to OCIR succeeded."
+    return 0
+  fi
   
-  # 5) Login to OCIR with format: namespace/domain/username and auth token (try initially, then retry up to 2 more times)
-  local attempt login_err tmp_login
-  for attempt in 1 2 3; do
-    info "Logging in to OCIR (${host}) with username '${user}' (attempt ${attempt}/3)..."
+  # 5) If login failed, wait 60 seconds and retry up to 2 more times
+  login_err="$(cat "$tmp_login" 2>/dev/null || true)"
+  rm -f "$tmp_login"
+  if [[ -n "$login_err" ]]; then
+    warn "Login error: ${login_err}"
+  fi
+  warn "Login failed. Token may need more time to propagate. Retrying with 60 second delays..."
+  
+  local attempt
+  for attempt in 1 2; do
+    info "Waiting 60 seconds for token propagation..."
+    sleep 60
+    info "Retrying login (attempt $((attempt + 1))/3)..."
     tmp_login="$(mktemp)"
     if "${CONTAINER_CMD}" login "$host" -u "$user" -p "$token_value" >"$tmp_login" 2>&1; then
       rm -f "$tmp_login"
@@ -922,10 +936,6 @@ ocir_login_cloud_shell() {
     rm -f "$tmp_login"
     if [[ -n "$login_err" ]]; then
       warn "Login error: ${login_err}"
-    fi
-    if [[ $attempt -lt 3 ]]; then
-      warn "Login failed (attempt ${attempt}/3). Token may need more time to propagate. Retrying in 60 seconds..."
-      sleep 60
     fi
   done
   
