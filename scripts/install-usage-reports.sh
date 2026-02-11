@@ -897,7 +897,6 @@ ocir_login_cloud_shell() {
   done
   
   # 3) Prompt for auth token with instructions
-  echo
   info "Create an auth token in user '${user}' profile and then enter it:"
   read -s -p "Enter OCIR auth token (will not be echoed): " token_value || true
   echo
