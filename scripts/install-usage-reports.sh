@@ -66,10 +66,12 @@ run_oci_region() {
 }
 
 # Get OCIR host (region-key.ocir.io), using OCIR_REGION from .env if set, otherwise using region_key parameter
+# If OCIR_REGION is set, it should be the full hostname (or region key without .ocir.io suffix)
+# If not set, returns region_key.ocir.io
 get_ocir_host() {
   local region_key="$1"
   if [[ -n "${OCIR_REGION:-}" ]]; then
-    echo "${OCIR_REGION}.ocir.io"
+    echo "${OCIR_REGION}"
   else
     echo "${region_key}.ocir.io"
   fi
