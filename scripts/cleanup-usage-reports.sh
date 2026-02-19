@@ -832,24 +832,14 @@ except Exception:
 }
 
 main() {
-  # Prompt for deletion pattern (default from .env OCIR_REPO_NAME)
-  local default_pattern="${OCIR_REPO_NAME:-oci-usage-reports}"
-  local deletion_pattern
-  deletion_pattern="$(prompt_default 'Enter pattern string for resource deletion' "${default_pattern}")"
-  [[ -z "$deletion_pattern" ]] && error "Deletion pattern cannot be empty."
-  
-  # Remove trailing * if user provided it (we append it anyway)
-  deletion_pattern="${deletion_pattern%\*}"
-  
-  # Get patterns from .env, but use deletion_pattern for all if provided
-  local app_pattern="${deletion_pattern}"
-  app_pattern="${app_pattern%-app}"  # Remove -app suffix if present
-  local repo_pattern="${deletion_pattern}"
-  local vcn_pattern="${deletion_pattern}"
-  local bucket_pattern="${BUCKET_NAME:-copyusagereport}"  # Keep bucket pattern separate as it's different
+  # Get patterns from .env
+  local app_pattern="${APP_NAME:-${VCN_NAME:-${OCIR_REPO_NAME:-oci-usage-reports}}}"
+  app_pattern="${app_pattern%-app}"
+  local repo_pattern="${OCIR_REPO_NAME:-oci-usage-reports}"
+  local vcn_pattern="${VCN_NAME:-oci-usage-reports}"
+  local bucket_pattern="${BUCKET_NAME:-copyusagereport}"
   
   info "Cleanup OCI Usage Reports Resources"
-  info "Using deletion pattern: '${deletion_pattern}*'"
   info "This will remove:"
   info "  - Functions applications and functions with name matching '${app_pattern}*'"
   info "  - OCIR repositories with name matching '${repo_pattern}*'"
