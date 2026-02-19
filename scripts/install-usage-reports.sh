@@ -65,6 +65,16 @@ run_oci_region() {
   fi
 }
 
+# Get OCIR host (region-key.ocir.io), using OCIR_REGION from .env if set, otherwise using region_key parameter
+get_ocir_host() {
+  local region_key="$1"
+  if [[ -n "${OCIR_REGION:-}" ]]; then
+    echo "${OCIR_REGION}.ocir.io"
+  else
+    echo "${region_key}.ocir.io"
+  fi
+}
+
 info()  { echo "[INFO]  $*"; }
 warn()  { echo "[WARN]  $*" >&2; }
 error() { echo "[ERROR] $*" >&2; exit 1; }
@@ -622,7 +632,8 @@ ocir_docker_login() {
   local namespace="$2"
   local default_token="${3:-}"
   local no_prompt_username="${4:-}"
-  local host="${region_key}.ocir.io"
+  local host
+  host="$(get_ocir_host "$region_key")"
   local user user_raw token suggested_user domain_choice domain_segment prefix
   local tenancy_ocid domains_array i n custom_opt
   local user_ocid default_user_login
@@ -786,7 +797,8 @@ ocir_login() {
 ocir_login_cloud_shell() {
   local region_key="$1"
   local namespace="$2"
-  local host="${region_key}.ocir.io"
+  local host
+  host="$(get_ocir_host "$region_key")"
   local user_ocid domain_segment domain_segment_lower user_raw user prefix token tenancy_ocid domains_array i n custom_opt domain_choice
   
   info "OCIR login for Cloud Shell (using auth token)"
@@ -947,11 +959,12 @@ ocir_login_cloud_shell() {
 
 ocir_login_localhost() {
   local region_key="$1"
-  local host="${region_key}.ocir.io"
+  local host
+  host="$(get_ocir_host "$region_key")"
   local token
   info "Logging in to OCIR (${host}) via oci raw-request token..."
   token="$(run_oci raw-request --region "$region_key" --http-method GET \
-      --target-uri "https://${region_key}.ocir.io/20180419/docker/token" \
+      --target-uri "https://${host}/20180419/docker/token" \
       2>/dev/null | jq -r .data.token)" || true
   if [[ -z "$token" || "$token" == "null" ]]; then
     error "Failed to get OCIR token. Ensure OCI CLI is configured."
@@ -1274,7 +1287,9 @@ install_prebuilt_with_fn() {
   tenancy_ocid=""
   days="$(prompt_default 'Optional: days lookback for reports (default 3)' '3')"
 
-  local registry="${region_key}.ocir.io/${namespace}/${repo_name}"
+  local ocir_host
+  ocir_host="$(get_ocir_host "$region_key")"
+  local registry="${ocir_host}/${namespace}/${repo_name}"
 
   # Create OCIR container repositories in the Functions app compartment (not tenancy root) so the function can pull images.
   # Image paths are namespace/repo_name/oci-copy-usage-report and namespace/repo_name/oci-xtenancy-check; create both repo paths.
@@ -1337,7 +1352,9 @@ install_prebuilt_with_fn() {
     if [[ "$push_out" == *[Uu]nauthorized* || "$push_out" == *"invalid username/password"* || "$push_out" == *"StatusCode: 403"* || "$push_out" == *"403"* || "$push_out" == *"trying to reuse blob"* || "$push_out" == *"unable to retrieve auth token"* ]]; then
       warn "Push failed (auth/blob reuse error); logging out, re-authenticating and retrying..."
       # Logout first to clear any stale credentials
-      "${CONTAINER_CMD}" logout "${region_key}.ocir.io" 2>/dev/null || true
+      local ocir_host
+      ocir_host="$(get_ocir_host "$region_key")"
+      "${CONTAINER_CMD}" logout "${ocir_host}" 2>/dev/null || true
       ocir_login "${region_key}" "${namespace}" || { echo "$push_out" >&2; return 1; }
       info "Retrying push: $img"
       if "${CONTAINER_CMD}" push "$img" 2>&1 | tee "$tmp"; then
@@ -1375,7 +1392,8 @@ install_prebuilt_with_fn() {
   # Fallback: if push failed and we're in Cloud Shell, ask for manual username/token
   if [[ ("$copy_push_failed" == "true" || "$xten_push_failed" == "true") && "${INSTALLER_ENV:-}" == "cloud_shell" ]]; then
     warn "Push failed after retries. Trying fallback: manual username and token."
-    local manual_user manual_token host="${region_key}.ocir.io"
+    local manual_user manual_token host
+    host="$(get_ocir_host "$region_key")"
     manual_user="$(prompt_default 'Enter OCIR username (format: namespace/domain/username)' "")"
     [[ -z "$manual_user" ]] && error "OCIR username is required."
     read -s -p "Enter OCIR auth token (will not be echoed): " manual_token || true
