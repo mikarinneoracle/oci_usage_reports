@@ -1275,7 +1275,7 @@ install_prebuilt_with_fn() {
     [[ -z "$region_key" ]] && error "Region key is required for OCI CLI operations."
   else
     region_key="$default_region"
-    info "Using detected region key for OCI CLI: ${region_key}"
+    # Don't show message when OCIR host is provided
   fi
 
   namespace="$(prompt_default 'Enter OCIR namespace' "${default_namespace:-}")"
