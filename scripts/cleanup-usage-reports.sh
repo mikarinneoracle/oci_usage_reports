@@ -283,7 +283,7 @@ delete_ocir_repos() {
   local tenancy_ocid
   tenancy_ocid="$(detect_tenancy_ocid || true)"
   
-  # Get all compartments including the specified one and all its sub-compartments
+  # Get all compartments including the specified one, tenancy root, and all sub-compartments
   local all_compartments
   if [[ -n "$tenancy_ocid" ]]; then
     all_compartments="$(run_oci iam compartment list \
@@ -293,9 +293,10 @@ delete_ocir_repos() {
       --output json 2>/dev/null | python3 -c "
 import sys, json
 target_comp_id = '${compartment_id}'
+tenancy_id = '${tenancy_ocid}'
 try:
     data = json.load(sys.stdin).get('data', [])
-    compartments = [target_comp_id]  # Always include the specified compartment
+    compartments = [target_comp_id, tenancy_id]  # Include target compartment and tenancy root
     # Find all sub-compartments of the target compartment
     for comp in data:
         comp_id = comp.get('id') or ''
@@ -303,17 +304,21 @@ try:
         # If this compartment's parent is the target, or if it's the target itself
         if parent_id == target_comp_id or comp_id == target_comp_id:
             compartments.append(comp_id)
-    # Remove duplicates and print (target compartment first)
+    # Remove duplicates and print (target compartment first, then tenancy root)
     seen = set()
     print(target_comp_id)  # Print target first
     seen.add(target_comp_id)
+    if tenancy_id not in seen:
+        print(tenancy_id)  # Print tenancy root second
+        seen.add(tenancy_id)
     for comp_id in compartments:
         if comp_id and comp_id not in seen:
             print(comp_id)
             seen.add(comp_id)
 except Exception:
     print('${compartment_id}')  # Fallback to just the specified compartment
-" 2>/dev/null || echo "$compartment_id")"
+    print('${tenancy_ocid}')  # Also include tenancy root
+" 2>/dev/null || echo -e "${compartment_id}\n${tenancy_ocid}")"
   else
     all_compartments="$compartment_id"
   fi
@@ -321,25 +326,54 @@ except Exception:
   # Search for repositories in all compartments
   local repos
   repos=""
+  local compartments_searched=0
   while IFS= read -r comp_id; do
     [[ -z "$comp_id" ]] && continue
-    local comp_repos
-    comp_repos="$(run_oci artifacts container repository list \
+    compartments_searched=$((compartments_searched + 1))
+    info "  Searching compartment: ${comp_id}"
+    
+    local comp_repos comp_repos_error
+    comp_repos_error="$(run_oci artifacts container repository list \
       --compartment-id "$comp_id" \
       --all \
-      --output json 2>/dev/null | python3 -c "
+      --output json 2>&1)"
+    local list_exit_code=$?
+    
+    if [[ $list_exit_code -ne 0 ]]; then
+      warn "    Failed to list repositories in compartment ${comp_id}: ${comp_repos_error}"
+      continue
+    fi
+    
+    comp_repos="$(echo "$comp_repos_error" | python3 -c "
 import sys, json
 pattern = '${repo_pattern}'.lower()
 try:
     data = json.load(sys.stdin).get('data', [])
+    all_repos = []
     for repo in data:
         name = repo.get('display-name') or repo.get('name') or ''
+        all_repos.append(name.lower())
         if name.lower().startswith(pattern):
             print(f\"{repo.get('id')}|{name}\")
-except Exception:
+except Exception as e:
+    sys.stderr.write(f'Error: {e}\n')
     pass
-" 2>/dev/null || true)"
-    if [[ -n "$comp_repos" ]]; then
+" 2>&1)"
+    
+    local parse_error
+    parse_error="$(echo "$comp_repos" | grep -i "error" || true)"
+    if [[ -n "$parse_error" ]]; then
+      warn "    Error parsing repository list: ${parse_error}"
+    fi
+    
+    # Count repositories found (excluding error messages)
+    local repo_count
+    repo_count="$(echo "$comp_repos" | grep -c '|' || echo "0")"
+    if [[ $repo_count -gt 0 ]]; then
+      info "    Found ${repo_count} matching repository/repositories"
+    fi
+    
+    if [[ -n "$comp_repos" && -z "$parse_error" ]]; then
       if [[ -z "$repos" ]]; then
         repos="$comp_repos"
       else
@@ -347,6 +381,8 @@ except Exception:
       fi
     fi
   done <<< "$all_compartments"
+  
+  info "  Searched ${compartments_searched} compartment(s)"
   
   if [[ -z "$repos" ]]; then
     info "No OCIR repositories found with name matching '${repo_pattern}*'."
