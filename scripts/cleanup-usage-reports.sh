@@ -355,8 +355,19 @@ try:
         print(f'ERROR: Expected dict, got {type(json_data).__name__}', file=sys.stderr)
         sys.exit(0)  # Exit with 0 to avoid triggering set -e
     data = json_data.get('data', [])
+    # Handle both list and dict cases (OCI API may return dict for single items or errors)
+    if isinstance(data, dict):
+        # If data is a dict, try to extract items from it or treat it as a single item
+        if 'items' in data:
+            data = data['items']
+        elif 'id' in data:
+            # Single repository wrapped in data dict
+            data = [data]
+        else:
+            # Empty or unexpected structure
+            data = []
     if not isinstance(data, list):
-        print(f'ERROR: Expected list in data field, got {type(data).__name__}', file=sys.stderr)
+        print(f'ERROR: Expected list or dict in data field, got {type(data).__name__}', file=sys.stderr)
         sys.exit(0)  # Exit with 0 to avoid triggering set -e
     for repo in data:
         if not isinstance(repo, dict):
@@ -367,7 +378,7 @@ try:
 except Exception as e:
     print(f'ERROR: {e}', file=sys.stderr)
     sys.exit(0)  # Exit with 0 to avoid triggering set -e
-" 2>&1) || true"
+" 2>&1)" || true
     
     # Separate stdout (repos) from stderr (errors)
     comp_repos="$(echo "$parse_error_output" | grep -v "^ERROR:" || true)"
