@@ -65,15 +65,20 @@ run_oci_region() {
   fi
 }
 
-# Get OCIR host (region-key.ocir.io), using OCIR from .env if set, otherwise using region_key parameter
-# If OCIR is set, it should be the full hostname (e.g., "ocir.eu-frankfurt-2.oci.oraclecloud.eu")
-# If not set, returns region_key.ocir.io
+# Get OCIR host - uses provided ocir_host if set, otherwise checks OCIR env var, then constructs from region_key
+# ocir_host should be the full hostname (e.g., "ocir.eu-frankfurt-2.oci.oraclecloud.eu")
+# If ocir_host is not provided, checks OCIR env var, then falls back to region_key.ocir.io
 get_ocir_host() {
-  local region_key="$1"
-  if [[ -n "${OCIR:-}" ]]; then
+  local ocir_host="${1:-}"
+  local region_key="${2:-}"
+  if [[ -n "$ocir_host" ]]; then
+    echo "$ocir_host"
+  elif [[ -n "${OCIR:-}" ]]; then
     echo "${OCIR}"
-  else
+  elif [[ -n "$region_key" ]]; then
     echo "${region_key}.ocir.io"
+  else
+    error "Either OCIR host or region key must be provided"
   fi
 }
 
@@ -630,12 +635,13 @@ print_par_cloud_ui_instructions() {
 ocir_docker_login() {
   # Docker login to OCIR (localhost only). Optional 3rd arg: auth token default. 4th arg "no_prompt_username" = use CLI config username without prompting.
   # Username format: namespace/domain/username
-  local region_key="$1"
-  local namespace="$2"
-  local default_token="${3:-}"
-  local no_prompt_username="${4:-}"
+  local ocir_host="${1:-}"
+  local region_key="$2"
+  local namespace="$3"
+  local default_token="${4:-}"
+  local no_prompt_username="${5:-}"
   local host
-  host="$(get_ocir_host "$region_key")"
+  host="$(get_ocir_host "$ocir_host" "$region_key")"
   local user user_raw token suggested_user domain_choice domain_segment prefix
   local tenancy_ocid domains_array i n custom_opt
   local user_ocid default_user_login
@@ -786,21 +792,23 @@ prechecks() {
 
 # OCIR login: Cloud Shell uses auth tokens (username + domain selection + token creation), localhost uses raw-request token.
 ocir_login() {
-  local region_key="$1"
-  local namespace="${2:-}"
+  local ocir_host="${1:-}"
+  local region_key="$2"
+  local namespace="${3:-}"
   
   if [[ "${INSTALLER_ENV:-}" == "cloud_shell" ]]; then
-    ocir_login_cloud_shell "${region_key}" "${namespace}"
+    ocir_login_cloud_shell "${ocir_host}" "${region_key}" "${namespace}"
   else
-    ocir_login_localhost "${region_key}"
+    ocir_login_localhost "${ocir_host}" "${region_key}"
   fi
 }
 
 ocir_login_cloud_shell() {
-  local region_key="$1"
-  local namespace="$2"
+  local ocir_host="${1:-}"
+  local region_key="$2"
+  local namespace="$3"
   local host
-  host="$(get_ocir_host "$region_key")"
+  host="$(get_ocir_host "$ocir_host" "$region_key")"
   local user_ocid domain_segment domain_segment_lower user_raw user prefix token tenancy_ocid domains_array i n custom_opt domain_choice
   
   info "OCIR login for Cloud Shell (using auth token)"
@@ -960,9 +968,10 @@ ocir_login_cloud_shell() {
 }
 
 ocir_login_localhost() {
-  local region_key="$1"
+  local ocir_host="${1:-}"
+  local region_key="$2"
   local host
-  host="$(get_ocir_host "$region_key")"
+  host="$(get_ocir_host "$ocir_host" "$region_key")"
   local token
   info "Logging in to OCIR (${host}) via oci raw-request token..."
   token="$(run_oci raw-request --region "$region_key" --http-method GET \
@@ -1248,22 +1257,25 @@ install_prebuilt_with_fn() {
     CONTAINER_CMD=docker
   fi
 
-  # If OCIR is set in .env, use it and skip region-key prompt (still need region_key for OCI CLI operations)
-  if [[ -n "${OCIR:-}" ]]; then
-    info "Using OCIR host from .env: ${OCIR}"
-    # Still need region_key for OCI CLI operations, try to detect it
-    if [[ -z "${default_region:-}" ]]; then
-      default_region="$(detect_default_region || true)"
-    fi
-    region_key="${default_region:-}"
-    if [[ -z "$region_key" ]]; then
-      warn "Could not detect region key. Some OCI CLI operations may fail."
-      region_key="us-ashburn-1"  # Default fallback
-    fi
-    info "Using region key for OCI CLI: ${region_key}"
+  # Prompt for OCIR host (use .env value as default if set)
+  local ocir_host
+  ocir_host="$(prompt_default 'Enter OCIR host' "${OCIR:-}")"
+  [[ -z "$ocir_host" ]] && error "OCIR host is required."
+  
+  # If OCIR host was provided, we still need region_key for OCI CLI operations
+  # Try to detect it, or prompt if not available
+  if [[ -z "${default_region:-}" ]]; then
+    default_region="$(detect_default_region || true)"
+  fi
+  
+  # If OCIR was set in .env and user accepted it, we can infer region_key might not be needed for OCIR
+  # But we still need it for other OCI CLI operations
+  if [[ -z "$default_region" ]]; then
+    region_key="$(prompt_default 'Enter OCI region key (for OCI CLI operations)' "${default_region:-}")"
+    [[ -z "$region_key" ]] && error "Region key is required for OCI CLI operations."
   else
-    region_key="$(prompt_default 'Enter OCI region key' "${default_region:-}")"
-    [[ -z "$region_key" ]] && error "Region key is required."
+    region_key="$default_region"
+    info "Using detected region key for OCI CLI: ${region_key}"
   fi
 
   namespace="$(prompt_default 'Enter OCIR namespace' "${default_namespace:-}")"
@@ -1304,9 +1316,9 @@ install_prebuilt_with_fn() {
   tenancy_ocid=""
   days="$(prompt_default 'Optional: days lookback for reports (default 3)' '3')"
 
-  local ocir_host
-  ocir_host="$(get_ocir_host "$region_key")"
-  local registry="${ocir_host}/${namespace}/${repo_name}"
+  local ocir_host_value
+  ocir_host_value="$(get_ocir_host "$ocir_host" "$region_key")"
+  local registry="${ocir_host_value}/${namespace}/${repo_name}"
 
   # Create OCIR container repositories in the Functions app compartment (not tenancy root) so the function can pull images.
   # Image paths are namespace/repo_name/oci-copy-usage-report and namespace/repo_name/oci-xtenancy-check; create both repo paths.
@@ -1369,10 +1381,10 @@ install_prebuilt_with_fn() {
     if [[ "$push_out" == *[Uu]nauthorized* || "$push_out" == *"invalid username/password"* || "$push_out" == *"StatusCode: 403"* || "$push_out" == *"403"* || "$push_out" == *"trying to reuse blob"* || "$push_out" == *"unable to retrieve auth token"* ]]; then
       warn "Push failed (auth/blob reuse error); logging out, re-authenticating and retrying..."
       # Logout first to clear any stale credentials
-      local ocir_host
-      ocir_host="$(get_ocir_host "$region_key")"
-      "${CONTAINER_CMD}" logout "${ocir_host}" 2>/dev/null || true
-      ocir_login "${region_key}" "${namespace}" || { echo "$push_out" >&2; return 1; }
+      local ocir_host_value
+      ocir_host_value="$(get_ocir_host "$ocir_host" "$region_key")"
+      "${CONTAINER_CMD}" logout "${ocir_host_value}" 2>/dev/null || true
+      ocir_login "${ocir_host}" "${region_key}" "${namespace}" || { echo "$push_out" >&2; return 1; }
       info "Retrying push: $img"
       if "${CONTAINER_CMD}" push "$img" 2>&1 | tee "$tmp"; then
         rm -f "$tmp"
@@ -1410,7 +1422,7 @@ install_prebuilt_with_fn() {
   if [[ ("$copy_push_failed" == "true" || "$xten_push_failed" == "true") && "${INSTALLER_ENV:-}" == "cloud_shell" ]]; then
     warn "Push failed after retries. Trying fallback: manual username and token."
     local manual_user manual_token host
-    host="$(get_ocir_host "$region_key")"
+    host="$(get_ocir_host "$ocir_host" "$region_key")"
     manual_user="$(prompt_default 'Enter OCIR username (format: namespace/domain/username)' "")"
     [[ -z "$manual_user" ]] && error "OCIR username is required."
     read -s -p "Enter OCIR auth token (will not be echoed): " manual_token || true
