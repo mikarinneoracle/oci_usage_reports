@@ -65,13 +65,13 @@ run_oci_region() {
   fi
 }
 
-# Get OCIR host (region-key.ocir.io), using OCIR_REGION from .env if set, otherwise using region_key parameter
-# If OCIR_REGION is set, it should be the full hostname (or region key without .ocir.io suffix)
+# Get OCIR host (region-key.ocir.io), using OCIR from .env if set, otherwise using region_key parameter
+# If OCIR is set, it should be the full hostname (e.g., "ocir.eu-frankfurt-2.oci.oraclecloud.eu")
 # If not set, returns region_key.ocir.io
 get_ocir_host() {
   local region_key="$1"
-  if [[ -n "${OCIR_REGION:-}" ]]; then
-    echo "${OCIR_REGION}"
+  if [[ -n "${OCIR:-}" ]]; then
+    echo "${OCIR}"
   else
     echo "${region_key}.ocir.io"
   fi
@@ -1248,8 +1248,23 @@ install_prebuilt_with_fn() {
     CONTAINER_CMD=docker
   fi
 
-  region_key="$(prompt_default 'Enter OCI region key' "${default_region:-}")"
-  [[ -z "$region_key" ]] && error "Region key is required."
+  # If OCIR is set in .env, use it and skip region-key prompt (still need region_key for OCI CLI operations)
+  if [[ -n "${OCIR:-}" ]]; then
+    info "Using OCIR host from .env: ${OCIR}"
+    # Still need region_key for OCI CLI operations, try to detect it
+    if [[ -z "${default_region:-}" ]]; then
+      default_region="$(detect_default_region || true)"
+    fi
+    region_key="${default_region:-}"
+    if [[ -z "$region_key" ]]; then
+      warn "Could not detect region key. Some OCI CLI operations may fail."
+      region_key="us-ashburn-1"  # Default fallback
+    fi
+    info "Using region key for OCI CLI: ${region_key}"
+  else
+    region_key="$(prompt_default 'Enter OCI region key' "${default_region:-}")"
+    [[ -z "$region_key" ]] && error "Region key is required."
+  fi
 
   namespace="$(prompt_default 'Enter OCIR namespace' "${default_namespace:-}")"
   [[ -z "$namespace" ]] && error "OCIR namespace is required."
