@@ -353,11 +353,11 @@ try:
     json_data = json.load(sys.stdin)
     if not isinstance(json_data, dict):
         print(f'ERROR: Expected dict, got {type(json_data).__name__}', file=sys.stderr)
-        sys.exit(1)
+        sys.exit(0)  # Exit with 0 to avoid triggering set -e
     data = json_data.get('data', [])
     if not isinstance(data, list):
         print(f'ERROR: Expected list in data field, got {type(data).__name__}', file=sys.stderr)
-        sys.exit(1)
+        sys.exit(0)  # Exit with 0 to avoid triggering set -e
     for repo in data:
         if not isinstance(repo, dict):
             continue
@@ -366,8 +366,8 @@ try:
             print(f\"{repo.get('id')}|{name}\")
 except Exception as e:
     print(f'ERROR: {e}', file=sys.stderr)
-    sys.exit(1)
-" 2>&1)"
+    sys.exit(0)  # Exit with 0 to avoid triggering set -e
+" 2>&1) || true"
     
     # Separate stdout (repos) from stderr (errors)
     comp_repos="$(echo "$parse_error_output" | grep -v "^ERROR:" || true)"
