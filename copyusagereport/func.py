@@ -136,8 +136,8 @@ def handler(ctx, data: io.BytesIO = None):
             logger.info(f"Downloaded {filename}, size: {o.size} bytes")
             
             with open(local_file_path, 'rb') as file_content:
-                # Build object name
-                base_object_name = f"{report_date.year}_{report_date.strftime('%m')}_{report_date.strftime('%d')}_{filename}"
+                # Build object name with namespace prefix
+                base_object_name = f"{namespace}_{report_date.year}_{report_date.strftime('%m')}_{report_date.strftime('%d')}_{filename}"
                 
                 # Add secret prefix if cross-tenancy upload with secret is enabled
                 if use_secret_prefix:
@@ -146,6 +146,7 @@ def handler(ctx, data: io.BytesIO = None):
                     logger.info(f"Added secret prefix to filename: {object_name}")
                 else:
                     object_name = base_object_name
+                    logger.info(f"Filename with namespace prefix: {object_name}")
                 
                 # Upload using cross-tenancy PAR or standard method
                 if use_cross_tenancy:
