@@ -1357,7 +1357,7 @@ install_prebuilt_with_fn() {
     warn "Could not get Functions app compartment; OCIR repositories may be created in tenancy root on first push."
   fi
 
-  ocir_login "${region_key}" "${namespace}"
+  ocir_login "${ocir_host}" "${region_key}" "${namespace}"
 
   info "Pulling prebuilt images from Docker Hub (${arch_tag})"
   "${CONTAINER_CMD}" pull "mikarinneoracle/oci-copy-usage-report:${arch_tag}"
