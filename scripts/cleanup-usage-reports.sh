@@ -344,36 +344,54 @@ except Exception:
       continue
     fi
     
-    comp_repos="$(echo "$comp_repos_error" | python3 -c "
+    # Parse JSON and extract matching repositories, capturing errors separately
+    local parse_error_output
+    parse_error_output="$(echo "$comp_repos_error" | python3 -c "
 import sys, json
 pattern = '${repo_pattern}'.lower()
 try:
-    data = json.load(sys.stdin).get('data', [])
-    all_repos = []
+    json_data = json.load(sys.stdin)
+    if not isinstance(json_data, dict):
+        print(f'ERROR: Expected dict, got {type(json_data).__name__}', file=sys.stderr)
+        sys.exit(1)
+    data = json_data.get('data', [])
+    if not isinstance(data, list):
+        print(f'ERROR: Expected list in data field, got {type(data).__name__}', file=sys.stderr)
+        sys.exit(1)
     for repo in data:
+        if not isinstance(repo, dict):
+            continue
         name = repo.get('display-name') or repo.get('name') or ''
-        all_repos.append(name.lower())
         if name.lower().startswith(pattern):
             print(f\"{repo.get('id')}|{name}\")
 except Exception as e:
-    sys.stderr.write(f'Error: {e}\n')
-    pass
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
 " 2>&1)"
     
+    # Separate stdout (repos) from stderr (errors)
+    comp_repos="$(echo "$parse_error_output" | grep -v "^ERROR:" || true)"
     local parse_error
-    parse_error="$(echo "$comp_repos" | grep -i "error" || true)"
+    parse_error="$(echo "$parse_error_output" | grep "^ERROR:" || true)"
+    
     if [[ -n "$parse_error" ]]; then
       warn "    Error parsing repository list: ${parse_error}"
     fi
     
-    # Count repositories found (excluding error messages)
-    local repo_count
-    repo_count="$(echo "$comp_repos" | grep -c '|' || echo "0")"
-    if [[ $repo_count -gt 0 ]]; then
+    # Count repositories found (only lines with | separator)
+    local repo_count=0
+    if [[ -n "$comp_repos" ]]; then
+      repo_count="$(echo "$comp_repos" | grep -c '|' 2>/dev/null || echo "0")"
+    fi
+    # Ensure repo_count is a clean number (remove any non-digits, take first value)
+    repo_count="$(echo "$repo_count" | head -1 | tr -cd '0-9')"
+    repo_count="${repo_count:-0}"
+    # Validate it's numeric before comparison
+    if [[ "$repo_count" =~ ^[0-9]+$ ]] && [[ "$repo_count" -gt 0 ]]; then
       info "    Found ${repo_count} matching repository/repositories"
     fi
     
-    if [[ -n "$comp_repos" && -z "$parse_error" ]]; then
+    if [[ -n "$comp_repos" ]]; then
       if [[ -z "$repos" ]]; then
         repos="$comp_repos"
       else
