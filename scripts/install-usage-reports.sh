@@ -1257,19 +1257,26 @@ install_prebuilt_with_fn() {
     CONTAINER_CMD=docker
   fi
 
-  # Prompt for OCIR host (use .env value as default if set)
-  local ocir_host
-  ocir_host="$(prompt_default 'Enter OCIR host' "${OCIR:-}")"
-  [[ -z "$ocir_host" ]] && error "OCIR host is required."
-  
-  # If OCIR host was provided, we still need region_key for OCI CLI operations
-  # Try to detect it, or prompt if not available
+  # Detect region key first (needed for default OCIR host if OCIR not set in .env)
   if [[ -z "${default_region:-}" ]]; then
     default_region="$(detect_default_region || true)"
   fi
   
-  # If OCIR was set in .env and user accepted it, we can infer region_key might not be needed for OCIR
-  # But we still need it for other OCI CLI operations
+  # Prompt for OCIR host (use .env value as default if set, otherwise use region_key.ocir.io)
+  local ocir_default
+  if [[ -n "${OCIR:-}" ]]; then
+    ocir_default="${OCIR}"
+  elif [[ -n "$default_region" ]]; then
+    ocir_default="${default_region}.ocir.io"
+  else
+    ocir_default=""
+  fi
+  
+  local ocir_host
+  ocir_host="$(prompt_default 'Enter OCIR host' "$ocir_default")"
+  [[ -z "$ocir_host" ]] && error "OCIR host is required."
+  
+  # Still need region_key for OCI CLI operations
   if [[ -z "$default_region" ]]; then
     region_key="$(prompt_default 'Enter OCI region key (for OCI CLI operations)' "${default_region:-}")"
     [[ -z "$region_key" ]] && error "Region key is required for OCI CLI operations."
