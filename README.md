@@ -101,16 +101,18 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 | Variable | Meaning | Example |
 |----------|---------|--------|
 | `INSTALLER_CHOICE` | Where to run: `1` = Cloud Shell, `2` = Localhost, `3` = Quit | *(configure)* |
-| `COMPARTMENT_NAME` | Compartment for the Functions application | *(configure)* |
+| `COMPARTMENT` | Compartment **name or OCID** for the Functions application | *(configure)* |
 | `APP_NAME` | OCI Functions application name | `oci-usage-reports-app` |
 | `ARCH` | Architecture for prebuilt images: `x86` or `arm` | *(configure)* |
 | `OCIR_REPO_NAME` | OCIR repository name for pushed images | `oci-usage-reports` |
+| `OCIR` | OCIR host override (full hostname, e.g. `ocir.eu-frankfurt-2.oci.oraclecloud.eu`). If set, used as default for OCIR host prompt; if empty, default is region from CLI + `.ocir.io` | *(optional)* |
 | `BUCKET_NAME` | Target bucket for copyusagereport | `copyusagereport` |
 | `VCN_NAME` | VCN name when creating a new VCN | `oci-usage-reports` |
 | `SUBNET_NAME` | Private subnet name when creating a new VCN | `oci-usage-reports-private` |
 | `VCN_CIDR` | VCN CIDR when creating a new VCN | `10.0.0.0/16` |
 | `SUBNET_CIDR` | Subnet CIDR when creating a new VCN | `10.0.1.0/24` |
 | `PAR_TTL_DAYS` | PAR validity in days when creating a new PAR | `365` |
+| `OCIR_USER` | OCIR username (user part only) for Cloud Shell auth token login | *(optional)* |
 | `DYN_GROUP_NAME` | Dynamic group name for IAM policies | `oci-usage-reports-dyn-group` |
 
 ### What the installer does (briefly)
@@ -118,7 +120,7 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 1. **Where to run** – Choose Cloud Shell (1) or Localhost (2). On localhost, it configures OCI CLI config path and profile.
 2. **Region, namespace, bucket** – Prompts for OCI region, OCIR namespace, and target bucket name for copyusagereport.
 3. **Architecture** – Select x86 or arm for prebuilt images and app shape.
-4. **Functions application** – Asks for compartment and app name; creates a new VCN with private subnet (and Service Gateway + route for OCIR) or lets you pick an existing subnet, then creates the OCI Functions application.
+4. **Functions application** – Asks for compartment (name or OCID) and app name; creates a new VCN with private subnet (and Service Gateway + route for OCIR) or lets you pick an existing subnet, then creates the OCI Functions application.
 5. **OCIR auth** – Authentication method depends on where you run the installer:
    - **Cloud Shell**: Prompts if you want to login to OCIR (default: no). If yes, prompts for OCIR username and identity domain, then asks you to manually create an auth token in your user profile and enter it. The script attempts login immediately; if it fails, waits 60 seconds and retries up to 2 more times.
    - **Localhost**: Uses OCI CLI-based authentication with a short-lived bearer token (no username/token needed).

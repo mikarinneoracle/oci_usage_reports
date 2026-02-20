@@ -15,7 +15,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Optional: load defaults for prompts (e.g. INSTALLER_CHOICE=2, COMPARTMENT_NAME=..., ARCH=arm)
+# Optional: load defaults for prompts (e.g. INSTALLER_CHOICE=2, COMPARTMENT=..., ARCH=arm)
 if [[ -f "${SCRIPT_DIR}/.env" ]] && [[ -r "${SCRIPT_DIR}/.env" ]]; then
   set +u
   # shellcheck source=/dev/null
@@ -329,30 +329,45 @@ create_functions_application() {
     error "Could not detect tenancy OCID from OCI CLI config. Please ensure 'tenancy=' is set in your OCI CLI profile."
   fi
 
-  local compartment_name compartment_id desc existing_app
+  local compartment_name compartment_id compartment_input desc existing_app
   while true; do
-    compartment_name="$(prompt_default 'Enter compartment name for the Functions application' "${COMPARTMENT_NAME:-}")"
-    if [[ -z "$compartment_name" ]]; then
-      warn "Compartment name cannot be empty."
+    compartment_input="$(prompt_default 'Enter compartment name or OCID for the Functions application' "${COMPARTMENT:-}")"
+    if [[ -z "$compartment_input" ]]; then
+      warn "Compartment cannot be empty."
       continue
     fi
-    
-    info "Resolving compartment '${compartment_name}'..."
-    compartment_id="$(
-      run_oci iam compartment list \
-        --compartment-id "$tenancy_ocid" \
-        --compartment-id-in-subtree true \
-        --all \
-        --query "data[?\"name\"=='${compartment_name}'].id | [0]" \
-        --raw-output 2>/dev/null || true
-    )"
 
-    if [[ -z "$compartment_id" || "$compartment_id" == "null" ]]; then
-      warn "Could not find compartment with name '${compartment_name}' under tenancy '${tenancy_ocid}'."
-      if ! confirm "Try again with a different compartment name?" "y"; then
-        error "Compartment resolution cancelled."
+    # If input looks like an OCID, use it directly and fetch the name
+    if [[ "$compartment_input" == ocid1.* ]]; then
+      compartment_id="$compartment_input"
+      compartment_name="$(run_oci iam compartment get --compartment-id "$compartment_id" --query 'data.name' --raw-output 2>/dev/null || true)"
+      if [[ -z "$compartment_name" || "$compartment_name" == "null" ]]; then
+        warn "Could not get compartment details for OCID '${compartment_id}'. Check the OCID and your permissions."
+        if ! confirm "Try again with a different compartment name or OCID?" "y"; then
+          error "Compartment resolution cancelled."
+        fi
+        continue
       fi
-      continue
+      info "Using compartment: ${compartment_name} (${compartment_id})"
+    else
+      # Resolve by name
+      compartment_name="$compartment_input"
+      info "Resolving compartment '${compartment_name}'..."
+      compartment_id="$(
+        run_oci iam compartment list \
+          --compartment-id "$tenancy_ocid" \
+          --compartment-id-in-subtree true \
+          --all \
+          --query "data[?\"name\"=='${compartment_name}'].id | [0]" \
+          --raw-output 2>/dev/null || true
+      )"
+      if [[ -z "$compartment_id" || "$compartment_id" == "null" ]]; then
+        warn "Could not find compartment with name '${compartment_name}' under tenancy '${tenancy_ocid}'."
+        if ! confirm "Try again with a different compartment name or OCID?" "y"; then
+          error "Compartment resolution cancelled."
+        fi
+        continue
+      fi
     fi
     break
   done

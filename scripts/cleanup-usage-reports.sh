@@ -925,7 +925,7 @@ main() {
   # Get compartment with retry loop
   local compartment_name="" compartment_id=""
   while true; do
-    compartment_name="$(prompt_default 'Enter compartment name' "${COMPARTMENT_NAME:-}")"
+    compartment_name="$(prompt_default 'Enter compartment name' "${COMPARTMENT:-}")"
     if [[ -z "$compartment_name" ]]; then
       warn "Compartment name cannot be empty."
       continue
