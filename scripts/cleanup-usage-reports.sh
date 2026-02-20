@@ -10,8 +10,8 @@ set -euo pipefail
 #   - VCNs and subnets with name matching VCN_NAME + "*"
 #   - Object Storage buckets with name matching BUCKET_NAME + "*"
 #
-# Patterns are read from scripts/.env (APP_NAME, OCIR_REPO_NAME, VCN_NAME, BUCKET_NAME)
-# and "*" is appended for matching. Defaults are used if variables are not set.
+# Patterns are read from scripts/.env (COMPARTMENT, APP_NAME, OCIR_REPO_NAME, VCN_NAME, BUCKET_NAME)
+# and "*" is appended for matching. COMPARTMENT (name or OCID) is used as default when set; others use defaults if not set.
 #
 # This script uses OCI CLI authentication only (not Resource Principal).
 # Run from the repository root or scripts directory.
@@ -922,29 +922,44 @@ main() {
     error "Could not detect tenancy OCID from OCI CLI config. Please ensure 'tenancy=' is set in your OCI CLI profile."
   fi
   
-  # Get compartment with retry loop
-  local compartment_name="" compartment_id=""
+  # Get compartment with retry loop (accept name or OCID). Default from .env COMPARTMENT if set.
+  local compartment_name="" compartment_id="" compartment_input=""
   while true; do
-    compartment_name="$(prompt_default 'Enter compartment name' "${COMPARTMENT:-}")"
-    if [[ -z "$compartment_name" ]]; then
-      warn "Compartment name cannot be empty."
+    compartment_input="$(prompt_default 'Enter compartment name or OCID' "${COMPARTMENT:-}")"
+    if [[ -z "$compartment_input" ]]; then
+      warn "Compartment cannot be empty."
       continue
     fi
-    
-    info "Resolving compartment '${compartment_name}'..."
-    compartment_id="$(get_compartment_id "$compartment_name" "$tenancy_ocid" || true)"
-    if [[ -z "$compartment_id" ]]; then
-      warn "Could not find compartment with name '${compartment_name}' under tenancy '${tenancy_ocid}'."
-      if ! confirm "Try again with a different compartment name?" "y"; then
-        error "Compartment resolution cancelled."
+
+    # If input looks like an OCID, use it directly and fetch the name
+    if [[ "$compartment_input" == ocid1.* ]]; then
+      compartment_id="$compartment_input"
+      compartment_name="$(run_oci iam compartment get --compartment-id "$compartment_id" --query 'data.name' --raw-output 2>/dev/null || true)"
+      if [[ -z "$compartment_name" || "$compartment_name" == "null" ]]; then
+        warn "Could not get compartment details for OCID '${compartment_id}'. Check the OCID and your permissions."
+        if ! confirm "Try again with a different compartment name or OCID?" "y"; then
+          error "Compartment resolution cancelled."
+        fi
+        continue
       fi
-      continue
+      info "Using compartment: ${compartment_name} (${compartment_id})"
+    else
+      # Resolve by name
+      compartment_name="$compartment_input"
+      info "Resolving compartment '${compartment_name}'..."
+      compartment_id="$(get_compartment_id "$compartment_name" "$tenancy_ocid" || true)"
+      if [[ -z "$compartment_id" ]]; then
+        warn "Could not find compartment with name '${compartment_name}' under tenancy '${tenancy_ocid}'."
+        if ! confirm "Try again with a different compartment name or OCID?" "y"; then
+          error "Compartment resolution cancelled."
+        fi
+        continue
+      fi
+      compartment_name="$(run_oci iam compartment get --compartment-id "$compartment_id" --query 'data.name' --raw-output 2>/dev/null || true)"
+      info "Using compartment: ${compartment_name:-$compartment_id}"
     fi
     break
   done
-  
-  compartment_name="$(run_oci iam compartment get --compartment-id "$compartment_id" --query 'data.name' --raw-output 2>/dev/null || true)"
-  info "Using compartment: ${compartment_name:-$compartment_id}"
   echo
   
   # Confirm deletion
