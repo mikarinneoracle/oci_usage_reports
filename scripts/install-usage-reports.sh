@@ -1486,7 +1486,7 @@ install_prebuilt_with_fn() {
   # Secret and PAR: no secret → prompt target bucket only. With secret → show PAR options first; option 1 prompts bucket for PAR, sets bucket_name, and we ensure bucket exists; option 2 uses existing PAR, bucket_name from .env default, skip bucket creation.
   secret="$(prompt_default 'Enter secret (leave empty to skip xtenancycheck deployment and just to use a local bucket for the reports)' "")"
   secret="$(printf '%s' "$secret" | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  local skip_bucket_ensure=false
+  local skip_bucket_ensure=false par_use_existing=false
   if [[ -z "$secret" ]]; then
     bucket_name="$(prompt_default 'Enter target bucket name for copyusagereport' "${BUCKET_NAME:-copyusagereport}")"
     [[ -z "$bucket_name" ]] && bucket_name="copyusagereport"
