@@ -581,6 +581,70 @@ except Exception:
         fi
       done <<< "$service_gateways"
     fi
+
+    # Delete NAT gateways (e.g. copyusagereport-par-nat created when using existing PAR)
+    info "  Searching for NAT gateways in VCN..."
+    local nat_gateways
+    nat_gateways="$(run_oci network nat-gateway list \
+      --compartment-id "$compartment_id" \
+      --vcn-id "$vcn_id" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', [])
+    for ngw in data:
+        name = ngw.get('display-name') or ngw.get('name') or ''
+        print(f\"{ngw.get('id')}|{name}\")
+except Exception:
+    pass
+" 2>/dev/null || true)"
+
+    if [[ -n "$nat_gateways" ]]; then
+      while IFS='|' read -r ngw_id ngw_name; do
+        [[ -z "$ngw_id" ]] && continue
+        info "    Deleting NAT gateway: ${ngw_name:-unnamed} (${ngw_id})"
+        if run_oci network nat-gateway delete --nat-gateway-id "$ngw_id" --force >/dev/null 2>&1; then
+          info "      ✓ NAT gateway deleted: ${ngw_name:-unnamed}"
+          deleted_resources+=("NAT Gateway: ${ngw_name:-unnamed}")
+          deleted_count=$((deleted_count + 1))
+        else
+          warn "      ✗ Failed to delete NAT gateway ${ngw_name:-unnamed}."
+        fi
+      done <<< "$nat_gateways"
+    fi
+
+    # Delete Internet gateways
+    info "  Searching for Internet gateways in VCN..."
+    local internet_gateways
+    internet_gateways="$(run_oci network internet-gateway list \
+      --compartment-id "$compartment_id" \
+      --vcn-id "$vcn_id" \
+      --all \
+      --output json 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin).get('data', [])
+    for igw in data:
+        name = igw.get('display-name') or igw.get('name') or ''
+        print(f\"{igw.get('id')}|{name}\")
+except Exception:
+    pass
+" 2>/dev/null || true)"
+
+    if [[ -n "$internet_gateways" ]]; then
+      while IFS='|' read -r igw_id igw_name; do
+        [[ -z "$igw_id" ]] && continue
+        info "    Deleting Internet gateway: ${igw_name:-unnamed} (${igw_id})"
+        if run_oci network internet-gateway delete --ig-id "$igw_id" --force >/dev/null 2>&1; then
+          info "      ✓ Internet gateway deleted: ${igw_name:-unnamed}"
+          deleted_resources+=("Internet Gateway: ${igw_name:-unnamed}")
+          deleted_count=$((deleted_count + 1))
+        else
+          warn "      ✗ Failed to delete Internet gateway ${igw_name:-unnamed}."
+        fi
+      done <<< "$internet_gateways"
+    fi
     
     # Delete VCN (last, after all dependencies are removed)
     info "  Deleting VCN: ${vcn_name}"

@@ -552,7 +552,9 @@ except Exception:
         error "Aborting: Service Gateway creation failed. Please fix networking and rerun the installer (or choose an existing private subnet)."
       fi
 
-      # Pass route rules via file so OCI CLI receives valid JSON (avoids shell/quoting issues).
+      # Route table: Oracle Services Network (OCIR) via Service Gateway only.
+      # Note: OCI does not allow Internet Gateway and Service Gateway in the same route table.
+      # For outbound internet (e.g. PAR uploads), use a NAT Gateway with a separate route table and per-resource routing, or a second subnet.
       local route_rules_file
       route_rules_file="$(mktemp)"
       printf '[{"destinationType":"SERVICE_CIDR_BLOCK","destination":"%s","networkEntityId":"%s"}]' "$svc_cidr" "$sgw_id" > "$route_rules_file"
@@ -828,17 +830,17 @@ ocir_login_cloud_shell() {
   
   info "OCIR login for Cloud Shell (using auth token)"
   
+  # Ask if user wants to do OCIR login (default no); if N, expect user already logged in
+  if ! confirm "Do OCIR login (using a short-lived token)? (y/N)" "n"; then
+    info "Skipping OCIR login. Expecting podman/docker login to OCIR already set."
+    return 0
+  fi
+  
   # Get namespace if not provided (should be available from install_prebuilt_with_fn)
   if [[ -z "$namespace" ]]; then
     namespace="$(detect_default_namespace || true)"
     [[ -z "$namespace" ]] && namespace="$(oci os ns get --query 'data' --raw-output 2>/dev/null || true)"
     [[ -z "$namespace" ]] && error "Could not determine Object Storage namespace for OCIR login."
-  fi
-  
-  # Ask if user wants to login to OCIR (default yes)
-  if ! confirm "Login to OCIR with auth token?" "y"; then
-    info "Skipping OCIR login. Will rely on existing docker login in Cloud Shell."
-    return 0
   fi
   
   # Get tenancy OCID once (needed for domain listing and user lookup)
@@ -987,6 +989,11 @@ ocir_login_localhost() {
   local region_key="$2"
   local host
   host="$(get_ocir_host "$ocir_host" "$region_key")"
+  # Ask before creating/using short-lived token (same as Cloud Shell path).
+  if ! confirm "Do OCIR login (using a short-lived token)? (y/N)" "n"; then
+    info "Skipping OCIR login. Expecting docker login to OCIR already set."
+    return 0
+  fi
   local token
   info "Logging in to OCIR (${host}) via oci raw-request token..."
   token="$(run_oci raw-request --region "$region_key" --http-method GET \
@@ -1489,7 +1496,8 @@ install_prebuilt_with_fn() {
     info "PAR for cross-tenancy upload (copyusagereport will use this to write to the other tenancy's bucket):"
     echo "  1) Create a new PAR with bucket for cross-tenancy upload and add it to copyusagereport config"
     echo "  2) Use existing PAR (enter URL) and add it to copyusagereport config"
-    local par_choice par_days ns_par par_expiry par_name access_uri par_bucket
+    local par_choice par_days ns_par par_expiry par_name access_uri par_bucket par_use_existing
+    par_use_existing=false
     par_choice="$(prompt_default 'Enter choice (1/2)' '1')"
     case "$(printf '%s' "$par_choice" | tr '[:upper:]' '[:lower:]')" in
       1)
@@ -1551,6 +1559,7 @@ install_prebuilt_with_fn() {
         fi
         ;;
       2)
+        par_use_existing=true
         par_url="$(prompt_default 'Enter existing PAR URL for cross-tenancy upload' "")"
         if [[ -z "$par_url" ]]; then
           warn "No PAR URL entered."
@@ -1560,6 +1569,56 @@ install_prebuilt_with_fn() {
         skip_bucket_ensure=true
         ;;
     esac
+  fi
+
+  # When user gave existing PAR URL, ensure the Functions subnet has outbound internet (NAT Gateway) for PAR uploads.
+  if [[ "$par_use_existing" == "true" && -n "$par_url" ]]; then
+    local app_comp_par subnets_json first_subnet_id vcn_id_par rt_id_par rt_json existing_rules nat_id route_rules_file_par
+    app_comp_par="$(run_oci fn application get --application-id "$FN_APP_ID" --query 'data."compartment-id"' --raw-output 2>/dev/null || true)"
+    subnets_json="$(run_oci fn application get --application-id "$FN_APP_ID" --query 'data."subnet-ids"' --raw-output 2>/dev/null || true)"
+    first_subnet_id="$(echo "$subnets_json" | jq -r 'if type == "array" then .[0] else . end' 2>/dev/null || true)"
+    if [[ -n "$app_comp_par" && "$app_comp_par" != "null" && -n "$first_subnet_id" && "$first_subnet_id" != "null" ]]; then
+      vcn_id_par="$(run_oci network subnet get --subnet-id "$first_subnet_id" --query 'data."vcn-id"' --raw-output 2>/dev/null || true)"
+      rt_id_par="$(run_oci network subnet get --subnet-id "$first_subnet_id" --query 'data."route-table-id"' --raw-output 2>/dev/null || true)"
+      if [[ -n "$vcn_id_par" && "$vcn_id_par" != "null" && -n "$rt_id_par" && "$rt_id_par" != "null" ]]; then
+        rt_json="$(run_oci network route-table get --rt-id "$rt_id_par" --output json 2>/dev/null || true)"
+        existing_rules="$(echo "$rt_json" | jq -c '.data["route-rules"] // .data.routeRules // []' 2>/dev/null || true)"
+        if [[ -z "$existing_rules" || "$existing_rules" == "null" ]]; then
+          existing_rules="[]"
+        fi
+        if echo "$existing_rules" | jq -e '.[] | select(.["destination"] == "0.0.0.0/0" or .destination == "0.0.0.0/0")' >/dev/null 2>&1; then
+          info "Route table already has a default route (0.0.0.0/0); skipping NAT Gateway creation."
+        else
+          info "Adding NAT Gateway for outbound internet access (required for PAR uploads when using existing PAR)..."
+          nat_id="$(run_oci network nat-gateway create \
+            --compartment-id "$app_comp_par" \
+            --vcn-id "$vcn_id_par" \
+            --display-name "copyusagereport-par-nat" \
+            --query 'data.id' \
+            --raw-output 2>/dev/null || true)"
+          if [[ -n "$nat_id" && "$nat_id" != "null" ]]; then
+            route_rules_file_par="$(mktemp)"
+            echo "$existing_rules" | jq --arg nat "$nat_id" '. + [{"destinationType":"CIDR_BLOCK","destination":"0.0.0.0/0","networkEntityId":$nat}]' > "$route_rules_file_par" 2>/dev/null || true
+            if [[ -s "$route_rules_file_par" ]]; then
+              if run_oci network route-table update --rt-id "$rt_id_par" --route-rules "file://${route_rules_file_par}" --force >/dev/null 2>&1; then
+                info "NAT Gateway created and route table updated for PAR upload access."
+              else
+                warn "NAT Gateway created but route table update failed. Add 0.0.0.0/0 -> NAT Gateway manually for PAR uploads."
+              fi
+            else
+              warn "Could not build route rules; NAT Gateway created but route table not updated."
+            fi
+            rm -f "$route_rules_file_par"
+          else
+            warn "Could not create NAT Gateway; PAR uploads may fail without outbound internet."
+          fi
+        fi
+      else
+        warn "Could not get VCN or route table from Functions subnet; skipping NAT Gateway setup for PAR access."
+      fi
+    else
+      warn "Could not get Functions app compartment or subnet; skipping NAT Gateway setup for PAR access."
+    fi
   fi
 
   # Ensure the target Object Storage bucket exists (function will fail with BucketNotFound otherwise). Skip when option 2 (existing PAR) was chosen.
@@ -1610,7 +1669,8 @@ install_prebuilt_with_fn() {
       --application-id "$FN_APP_ID" \
       --display-name copyusagereport \
       --image "${registry}/oci-copy-usage-report:${arch_tag}" \
-      --memory-in-mbs 256 \
+      --memory-in-mbs 3072 \
+      --timeout-in-seconds 300 \
       --config "$copy_cfg" \
       --query 'data.id' \
       --raw-output 2>/dev/null || true
@@ -1760,11 +1820,12 @@ main() {
 
   while true; do
     choice="$(prompt_default 'Enter choice' "${INSTALLER_CHOICE:-1}")"
+    choice="$(printf '%s' "$choice" | head -1 | tr -d '\n\r')"
     case "$choice" in
       1|"")
         INSTALLER_ENV=cloud_shell
         info "Using OCI Cloud Shell; skipping CLI config setup (default config will be used)."
-        if confirm "Free space with 'docker system prune -a' before continuing? (removes unused images, containers, networks)" "n"; then
+        if confirm "Free space with docker system prune -a before continuing? (removes unused images/containers/networks)" "n"; then
           docker system prune -a || true
         fi
         prechecks
