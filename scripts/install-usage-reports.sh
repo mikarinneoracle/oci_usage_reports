@@ -1836,7 +1836,9 @@ main() {
         INSTALLER_ENV=localhost
         info "Using localhost; configuring OCI CLI config path and profile."
         prechecks
-        setup_oci_cli_context
+        # Invoke by name to avoid line-wrap breaking "context" into "co" + "ntext"
+        local _oci_setup_fn=setup_oci_cli_context
+        $_oci_setup_fn
         break
         ;;
       "3")
