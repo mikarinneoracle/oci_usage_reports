@@ -830,6 +830,12 @@ ocir_login_cloud_shell() {
   
   info "OCIR login for Cloud Shell (using auth token)"
   
+  # Ask if user wants to do OCIR login (default no); if N, expect user already logged in
+  if ! confirm "Do OCIR login? (y/N)" "n"; then
+    info "Skipping OCIR login. Expecting podman/docker login to OCIR already set."
+    return 0
+  fi
+  
   # Get namespace if not provided (should be available from install_prebuilt_with_fn)
   if [[ -z "$namespace" ]]; then
     namespace="$(detect_default_namespace || true)"
