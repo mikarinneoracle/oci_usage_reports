@@ -507,33 +507,40 @@ except Exception:
 
     # Service Gateway + route so the private subnet can reach OCI services (e.g. OCIR to pull images).
     info "Adding Service Gateway and route for Oracle Services Network (required for OCIR image pull)..."
-    local region_key svc_id svc_cidr sgw_id rt_id oci_err svc_name
+    local region_key svc_id svc_cidr sgw_id rt_id oci_err svc_name svc_list_json svc_count svc_choice i
     region_key="$(detect_default_region || true)"
-    # First service is typically "All <region> services in Oracle Services Network"; use its id and CIDR label.
-    # Route table API expects a slug like "all-fra-services-in-oracle-services-network". CLI cidr_block can return
-    # invalid data (e.g. JSON array); we always derive from service name and use that if API value looks wrong.
-    svc_id="$(run_oci_region "$region_key" network service list --all --query 'data[0].id' --raw-output 2>/dev/null || true)"
-    svc_name="$(run_oci_region "$region_key" network service list --all --query 'data[0].name' --raw-output 2>/dev/null || true)"
-    # Derived label: "All FRA Services In Oracle Services Network" -> all-fra-services-in-oracle-services-network
-    local name_derived_cidr
-    if [[ -n "$svc_name" && "$svc_name" != "null" ]]; then
-      name_derived_cidr="$(echo "$svc_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -d '\n')"
-    else
-      name_derived_cidr=""
+    # Fetch all services; in some regions (e.g. EU sovereign) the first service may not be valid for route tables.
+    svc_list_json="$(run_oci_region "$region_key" network service list --all --output json 2>/dev/null || true)"
+    if [[ -z "$svc_list_json" || "$svc_list_json" == "null" ]]; then
+      warn "Could not list network services. Run: oci network service list --all --region <your-region>"
+      error "Aborting: could not list Oracle Services Network. Check region and OCI permissions."
     fi
-
-    svc_cidr="$(run_oci_region "$region_key" network service list --all --query 'data[0].cidr_block' --raw-output 2>/dev/null || true)"
-    svc_cidr="$(printf '%s' "$svc_cidr" | tr -d '\n')"
-    # Reject API value if it looks like JSON or is not a single slug (route table expects e.g. all-fra-services-in-oracle-services-network)
-    if [[ -z "$svc_cidr" || "$svc_cidr" == "null" || "$svc_cidr" =~ [\[\]\"\\] || "$svc_cidr" =~ [[:space:]] ]]; then
-      svc_cidr="$name_derived_cidr"
+    svc_count="$(echo "$svc_list_json" | jq -r '.data | length' 2>/dev/null || echo "0")"
+    if [[ -z "$svc_count" || "$svc_count" == "null" || "$svc_count" -lt 1 ]]; then
+      error "Aborting: no network services returned for region."
     fi
-    if [[ -z "$svc_cidr" ]]; then
-      svc_cidr="$(run_oci_region "$region_key" network service list --all --query 'data[0].cidrBlock' --raw-output 2>/dev/null || true)"
-      svc_cidr="$(printf '%s' "$svc_cidr" | tr -d '\n')"
-      if [[ -z "$svc_cidr" || "$svc_cidr" == "null" || "$svc_cidr" =~ [\[\]\"\\] || "$svc_cidr" =~ [[:space:]] ]]; then
-        svc_cidr="$name_derived_cidr"
+    info "Select a service for the Service Gateway route (choose the one that includes OCIR; in sovereign cloud pick 'All ... services in Oracle Services Network'):"
+    for i in $(seq 1 "$svc_count"); do
+      svc_name="$(echo "$svc_list_json" | jq -r ".data[$((i-1))].name // \"\"")"
+      svc_cidr_raw="$(echo "$svc_list_json" | jq -r ".data[$((i-1))].cidr_block // .data[$((i-1))].cidrBlock // \"\"")"
+      svc_cidr_raw="$(printf '%s' "$svc_cidr_raw" | tr -d '\n')"
+      if [[ -z "$svc_cidr_raw" || "$svc_cidr_raw" == "null" || "$svc_cidr_raw" =~ [\[\]\"\\] || "$svc_cidr_raw" =~ [[:space:]] ]]; then
+        svc_cidr_raw="$(echo "$svc_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -d '\n')"
       fi
+      echo "  ${i}) ${svc_name} (${svc_cidr_raw})"
+    done
+    svc_choice="$(prompt_default "Enter choice (1-${svc_count})" "1")"
+    svc_choice="$((svc_choice + 0))"
+    if [[ "$svc_choice" -lt 1 || "$svc_choice" -gt "$svc_count" ]]; then
+      warn "Invalid choice; using 1."
+      svc_choice=1
+    fi
+    svc_id="$(echo "$svc_list_json" | jq -r ".data[$((svc_choice-1))].id" 2>/dev/null || true)"
+    svc_name="$(echo "$svc_list_json" | jq -r ".data[$((svc_choice-1))].name // \"\"" 2>/dev/null || true)"
+    svc_cidr="$(echo "$svc_list_json" | jq -r ".data[$((svc_choice-1))].cidr_block // .data[$((svc_choice-1))].cidrBlock // \"\"" 2>/dev/null || true)"
+    svc_cidr="$(printf '%s' "$svc_cidr" | tr -d '\n')"
+    if [[ -z "$svc_cidr" || "$svc_cidr" == "null" || "$svc_cidr" =~ [\[\]\"\\] || "$svc_cidr" =~ [[:space:]] ]]; then
+      svc_cidr="$(echo "$svc_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -d '\n')"
     fi
     if [[ -n "$svc_id" && "$svc_id" != "null" && -n "$svc_cidr" && "$svc_cidr" != "null" ]]; then
       oci_err="$(mktemp)"
