@@ -120,15 +120,20 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 1. **Where to run** – Choose Cloud Shell (1) or Localhost (2). On localhost, it configures OCI CLI config path and profile.
 2. **Region, namespace, bucket** – Prompts for OCI region, OCIR namespace, and target bucket name for copyusagereport.
 3. **Architecture** – Select x86 or arm for prebuilt images and app shape.
-4. **Functions application** – Asks for compartment (name or OCID) and app name; creates a new VCN with private subnet (and Service Gateway + route for OCIR) or lets you pick an existing subnet, then creates the OCI Functions application.
+4. **Functions application & networking** – Asks for compartment (name or OCID) and app name; creates a new VCN with private subnet and Service Gateway, or lets you pick an existing subnet, then creates the OCI Functions application. When creating a new VCN it:
+   - Lists available **Oracle Services Network** services for the region and lets you pick which one to use for the Service Gateway route (for sovereign regions, pick the “All &lt;region&gt; services in Oracle Services Network” entry).
+   - Creates a route table that sends traffic for the chosen service CIDR to the Service Gateway.
 5. **OCIR auth** – Authentication method depends on where you run the installer:
-   - **Cloud Shell**: Prompts if you want to login to OCIR (default: no). If yes, prompts for OCIR username and identity domain, then asks you to manually create an auth token in your user profile and enter it. The script attempts login immediately; if it fails, waits 60 seconds and retries up to 2 more times.
-   - **Localhost**: Uses OCI CLI-based authentication with a short-lived bearer token (no username/token needed).
+   - **Cloud Shell**: Asks “Do OCIR login? (y/N)” (default: no). If yes, prompts for OCIR username and identity domain, then asks you to manually create an auth token in your user profile and enter it. The script attempts login immediately; if it fails, waits 60 seconds and retries up to 2 more times.
+   - **Localhost**: Asks “Do OCIR login (using a short-lived token)? (y/N)” (default: no). If yes, uses OCI CLI to obtain a short‑lived bearer token and perform `docker login`/`podman login` to OCIR.
 6. **Docker** – Logs in to OCIR, pulls prebuilt images, tags and pushes them to your OCIR repo.
 7. **Bucket** – Ensures the target Object Storage bucket exists in the app’s compartment (creates it if missing).
-8. **Secret and PAR** – Asks for a secret (optional; used for cross-tenancy and xtenancycheck). If given, offers: create a new PAR (with TTL in days), use an existing PAR URL, or skip. PAR URL is stored in copyusagereport config.
-9. **copyusagereport** – Creates the function with config (bucket, days, optional secret and `x-tenancy_par`).
-10. **xtenancycheck (optional)** – If a secret was set, offers to deploy xtenancycheck with the same secret.
+8. **Secret and PAR** – Asks for a secret (optional; used for cross-tenancy and xtenancycheck). If a secret is provided:
+   - **Option 1 – Create new PAR**: Creates (or ensures) a bucket, then creates a new PAR with configurable TTL in days and stores the PAR URL in the copyusagereport config.
+   - **Option 2 – Use existing PAR URL**: Prompts for an existing PAR URL and stores it in the copyusagereport config. In this case the installer also creates a **NAT Gateway** in the Functions VCN and adds a `0.0.0.0/0` route to the NAT in the application subnet’s route table so the function can reach the PAR endpoint.
+   - If no secret is provided, PAR configuration and xtenancycheck are skipped and only same‑tenancy copying is configured.
+9. **copyusagereport** – Creates the `copyusagereport` function with config (bucket, days, optional secret and `x-tenancy_par`) and allocates **3072 MB memory** with a **300 s timeout**.
+10. **xtenancycheck (optional)** – If a secret was set, offers to deploy xtenancycheck with the same secret (defaults to the standard 256 MB / 30 s function shape).
 11. **Dynamic group and IAM policies** – Prompts to set up automatically (default: yes). Creates a dynamic group in root compartment matching functions in the app compartment, and IAM policies in the app compartment for Object Storage access. Shows summary of created resources.
 12. **Quick test (optional)** – Can invoke copyusagereport and run a short xtenancycheck test (upload/delete object with secret prefix).
 
