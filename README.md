@@ -139,6 +139,19 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 
 After deployment, schedule **copyusagereport** (e.g. via OCI Resource Scheduler) and attach **xtenancycheck** to the bucket’s Object Storage events (see [Deployment Scenarios](#deployment-scenarios) and the linked docs).
 
+### Example IAM policy for Resource Scheduler
+
+If you use **OCI Resource Scheduler** to invoke `copyusagereport`, you must allow the schedule principal to call Functions in the compartment that contains the application:
+
+```text
+Allow any-user to manage functions-family in compartment <COMPARTMENT_NAME_OR_OCID> where all{
+  request.principal.type = 'resourceschedule',
+  request.principal.id   = '<RESOURCE_SCHEDULE_OCID>'
+}
+```
+
+Replace `<COMPARTMENT_NAME_OR_OCID>` with the compartment name or OCID where the Functions application lives, and `<RESOURCE_SCHEDULE_OCID>` with the OCID of your Resource Schedule.
+
 ## Documentation
 
 - **[Scripted Install (recommended)](#scripted-install-recommended)** – Easiest option: run `scripts/install-usage-reports.sh` for an interactive installer (VCN, bucket, both functions, optional PAR). Use other approaches only if you need to custom-build and test.
