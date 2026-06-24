@@ -129,16 +129,18 @@ The event delivers object metadata (namespace, bucket, object name) to the funct
 
 For **cross-tenancy reports across multiple tenancies**, a common pattern is:
 
-- **Deploy both functions (`copyusagereport` and `xtenancycheck`) into each participating tenancy.**
-- **Use a shared `secret` and a shared bucket-level PAR URL across all those tenancies.**
+- Deploy `copyusagereport` in each participating tenancy.
+- Deploy `xtenancycheck` only in the primary tenancy that hosts the destination reports bucket.
+- Use a shared `secret` and a shared bucket-level PAR URL for all secondary tenancy `copyusagereport` functions.
 
 In this setup:
 
 - One tenancy **hosts the destination reports bucket** and the **PAR** (created on that bucket).
+- The primary tenancy also runs `xtenancycheck` and attaches it to the destination bucket's Object Storage create/update events.
 - All other tenancies:
-  - Deploy their own `copyusagereport` and `xtenancycheck` functions.
+  - Deploy their own `copyusagereport` function.
   - Configure the **same `secret`** and **same PAR URL** on their `copyusagereport` function.
-  - Configure the **same `secret`** on their `xtenancycheck` function that protects the destination bucket.
+  - Do **not** deploy `xtenancycheck`; it protects the destination bucket in the primary tenancy.
 
 This allows **multiple tenancies** to send reports into the **same bucket** in the PAR-hosting tenancy, while `xtenancycheck` in that tenancy enforces the shared secret prefix. You’ll need **credentials and IAM permissions in all involved tenancies** (one hosting the reports bucket and any number of “source” tenancies).
 
@@ -153,6 +155,13 @@ For manual deployment, create a dynamic group that includes your function and gr
 ```hcl
 Allow dynamic-group <dynamic-group-name> to manage objects in compartment <compartment-name>
 Allow dynamic-group <dynamic-group-name> to read objectstorage-namespace in compartment <compartment-name>
+```
+
+**For copyusagereport source cost reports** (required to read Oracle-managed reports from `bling/<tenancy_ocid>`):
+
+```hcl
+define tenancy usage-report as ocid1.tenancy.oc1..aaaaaaaaned4fkpkisbwjlr56u7cj63lf3wffbilvqknstgtvzub7vhqkggq
+endorse dynamic-group <dynamic-group-name> to read objects in tenancy usage-report
 ```
 
 **For xtenancycheck** (to restrict to a specific bucket):

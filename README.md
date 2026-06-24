@@ -51,6 +51,7 @@ For local development, both functions can be built using the `build-local.sh` sc
 
 For **in-tenancy setup** where usage reports remain within a single tenancy:
 
+- Choose installer scenario **3) Same-tenancy copy**
 - **No secret configuration required** – Skip the secret prompt when running the installer
 - **No PAR needed** – Reports are copied to buckets within the same tenancy
 - **No xtenancycheck function** – Security validation is not required for same-tenancy operations
@@ -63,15 +64,18 @@ For **cross-tenancy setup** where reports from multiple tenancies are consolidat
 
 1. **Primary Tenancy** (where all reports are collected):
    - Run the installer first
+   - Choose installer scenario **1) Primary tenancy**
    - When prompted for a secret, provide one (this will be shared across all tenancies)
-   - Choose option 1 to **create a new PAR** for the destination bucket
+   - Accept the default PAR option to **create a new PAR** for the destination bucket
    - Deploy **both functions**: `copyusagereport` and `xtenancycheck`
+   - Let the installer create the Object Storage event rule for the destination bucket, or create it manually
    - The `xtenancycheck` function validates all incoming reports using the shared secret
 
 2. **Secondary Tenancies** (source tenancies sending reports):
    - Run the installer in each secondary tenancy
+   - Choose installer scenario **2) Secondary tenancy**
    - When prompted for a secret, use the **same secret** as the primary tenancy
-   - Choose option 2 to **use the existing PAR URL** (created in the primary tenancy)
+   - Accept the default PAR option to **use the existing PAR URL** (created in the primary tenancy)
    - Deploy **only the `copyusagereport` function** – `xtenancycheck` is not needed in secondary tenancies
 
 This setup allows multiple tenancies to securely upload reports to a central bucket in the primary tenancy, with `xtenancycheck` enforcing the shared secret prefix for security validation.
@@ -101,6 +105,7 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 | Variable | Meaning | Example |
 |----------|---------|--------|
 | `INSTALLER_CHOICE` | Where to run: `1` = Cloud Shell, `2` = Localhost, `3` = Quit | *(configure)* |
+| `INSTALL_SCENARIO` | Install scenario: `1` = Primary tenancy, `2` = Secondary tenancy, `3` = Same-tenancy copy | `1` |
 | `COMPARTMENT` | Compartment **name or OCID** for the Functions application | *(configure)* |
 | `APP_NAME` | OCI Functions application name | `oci-usage-reports-app` |
 | `ARCH` | Architecture for prebuilt images: `x86` or `arm` | *(configure)* |
@@ -118,26 +123,27 @@ You can set these in `scripts/.env` so the installer uses them as defaults (no n
 ### What the installer does (briefly)
 
 1. **Where to run** – Choose Cloud Shell (1) or Localhost (2). On localhost, it configures OCI CLI config path and profile.
-2. **Region, namespace, bucket** – Prompts for OCI region, OCIR namespace, and target bucket name for copyusagereport.
-3. **Architecture** – Select x86 or arm for prebuilt images and app shape.
-4. **Functions application & networking** – Asks for compartment (name or OCID) and app name; creates a new VCN with private subnet and Service Gateway, or lets you pick an existing subnet, then creates the OCI Functions application. When creating a new VCN it:
+2. **Install scenario** – Choose Primary tenancy, Secondary tenancy, or Same-tenancy copy. Primary defaults to creating a PAR and deploying xtenancycheck; Secondary defaults to using an existing PAR and skipping xtenancycheck; Same-tenancy skips PAR.
+3. **Region, namespace, bucket** – Prompts for OCI region, OCIR namespace, and target bucket name for copyusagereport.
+4. **Architecture** – Select x86 or arm for prebuilt images and app shape.
+5. **Functions application & networking** – Asks for compartment (name or OCID) and app name; if an application with that name already exists, asks whether to delete it (default: no) before prompting for a different name. Then it creates a new VCN with private subnet and Service Gateway, or lets you pick an existing subnet, and creates the OCI Functions application. When creating a new VCN it:
    - Lists available **Oracle Services Network** services for the region and lets you pick which one to use for the Service Gateway route (for sovereign regions, pick the “All &lt;region&gt; services in Oracle Services Network” entry).
    - Creates a route table that sends traffic for the chosen service CIDR to the Service Gateway.
-5. **OCIR auth** – Authentication method depends on where you run the installer:
+6. **OCIR auth** – Authentication method depends on where you run the installer:
    - **Cloud Shell**: Asks “Do OCIR login? (y/N)” (default: no). If yes, prompts for OCIR username and identity domain, then asks you to manually create an auth token in your user profile and enter it. The script attempts login immediately; if it fails, waits 60 seconds and retries up to 2 more times.
    - **Localhost**: Asks “Do OCIR login (using a short-lived token)? (y/N)” (default: no). If yes, uses OCI CLI to obtain a short‑lived bearer token and perform `docker login`/`podman login` to OCIR.
-6. **Docker** – Logs in to OCIR, pulls prebuilt images, tags and pushes them to your OCIR repo.
-7. **Bucket** – Ensures the target Object Storage bucket exists in the app’s compartment (creates it if missing).
-8. **Secret and PAR** – Asks for a secret (optional; used for cross-tenancy and xtenancycheck). If a secret is provided:
-   - **Option 1 – Create new PAR**: Creates (or ensures) a bucket, then creates a new PAR with configurable TTL in days and stores the PAR URL in the copyusagereport config.
-   - **Option 2 – Use existing PAR URL**: Prompts for an existing PAR URL and stores it in the copyusagereport config. In this case the installer also creates a **NAT Gateway** in the Functions VCN and adds a `0.0.0.0/0` route to the NAT in the application subnet’s route table so the function can reach the PAR endpoint.
-   - If no secret is provided, PAR configuration and xtenancycheck are skipped and only same‑tenancy copying is configured.
-9. **copyusagereport** – Creates the `copyusagereport` function with config (bucket, days, optional secret and `x-tenancy_par`) and allocates **3072 MB memory** with a **300 s timeout**.
-10. **xtenancycheck (optional)** – If a secret was set, offers to deploy xtenancycheck with the same secret (defaults to the standard 256 MB / 30 s function shape).
-11. **Dynamic group and IAM policies** – Prompts to set up automatically (default: yes). Creates a dynamic group in root compartment matching functions in the app compartment, and IAM policies in the app compartment for Object Storage access. Shows summary of created resources.
-12. **Quick test (optional)** – Can invoke copyusagereport and run a short xtenancycheck test (upload/delete object with secret prefix).
+7. **Docker** – Logs in to OCIR, pulls prebuilt images, tags and pushes them to your OCIR repo.
+8. **Bucket** – Ensures the target Object Storage bucket exists in the app’s compartment (creates it if missing).
+9. **Secret and PAR** – Primary and Secondary scenarios require a shared secret for filename prefixes and xtenancycheck validation. Same-tenancy skips the secret and PAR prompts.
+   - **Primary**: Creates (or ensures) a bucket, creates a bucket-level PAR with configurable TTL, and stores the PAR URL in the copyusagereport config.
+   - **Secondary**: Prompts for an existing bucket-level PAR URL and stores it in the copyusagereport config. The installer also creates a **NAT Gateway** in the Functions VCN and adds a `0.0.0.0/0` route to the NAT in the application subnet’s route table so the function can reach the PAR endpoint.
+   - **Same-tenancy**: Prompts only for the local target bucket.
+10. **copyusagereport** – Creates the `copyusagereport` function with config (bucket, days, optional secret and `x-tenancy_par`) and allocates **3072 MB memory** with a **300 s timeout**.
+11. **xtenancycheck (optional)** – If a secret was set, offers to deploy xtenancycheck with the same secret (defaults to the standard 256 MB / 30 s function shape). When the installer created or selected the PAR bucket in this tenancy, it can also create an OCI Events rule that invokes xtenancycheck on Object Create and Object Update events for that bucket.
+12. **Dynamic group and IAM policies** – Prompts to set up automatically (default: yes). Creates a dynamic group in root compartment matching functions in the app compartment, and IAM policies in the app compartment for Object Storage access. Shows summary of created resources.
+13. **Quick test (optional)** – Invokes copyusagereport. In the Primary scenario it also runs a short xtenancycheck test (upload/delete object with secret prefix).
 
-After deployment, schedule **copyusagereport** (e.g. via OCI Resource Scheduler) and attach **xtenancycheck** to the bucket’s Object Storage events (see [Deployment Scenarios](#deployment-scenarios) and the linked docs).
+After deployment, schedule **copyusagereport** (e.g. via OCI Resource Scheduler). If you did not let the installer create the Events rule, attach **xtenancycheck** to the bucket’s Object Storage events manually (see [Deployment Scenarios](#deployment-scenarios) and the linked docs).
 
 ### Example IAM policy for Resource Scheduler
 
@@ -158,4 +164,3 @@ Replace `<COMPARTMENT_NAME_OR_OCID>` with the compartment name or OCID where the
 - **[Fn Build for OCI](fn-build-for-oci.md)** – Install Fn, clone repo, create VCN/OCIR, deploy from source; OCI scheduling for copyusagereport; Object Storage events for xtenancycheck
 - **[Using Prebuilt Functions](using-prebuilt-functions.md)** – Deploy prebuilt Docker images manually (VCN, OCIR, pull/tag/push/deploy); same scheduling and event setup
 - **[Local Development](local-dev.md)** – Build and run locally with Fn server; optionally deploy to OCI with private OCIR when using CLI config instead of Resource Principal
-

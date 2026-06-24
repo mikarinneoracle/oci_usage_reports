@@ -9,6 +9,18 @@ Prebuilt Docker images are available on Docker Hub. They must be pulled, tagged 
 | copyusagereport  | `mikarinneoracle/oci-copy-usage-report:x86`  | `mikarinneoracle/oci-copy-usage-report:arm`  |
 | xtenancycheck    | `mikarinneoracle/oci-xtenancy-check:x86`     | `mikarinneoracle/oci-xtenancy-check:arm`     |
 
+## Choose a Scenario
+
+The scripted installer asks this first and uses it to set safer defaults:
+
+| Scenario | Use when | Installer defaults |
+|----------|----------|--------------------|
+| Primary tenancy | This tenancy hosts the destination bucket and PAR | Create/ensure bucket, create bucket-level PAR, deploy `copyusagereport` and `xtenancycheck`, optionally create the Object Storage event rule |
+| Secondary tenancy | This tenancy sends reports to an existing PAR in the primary tenancy | Prompt for existing PAR, deploy `copyusagereport` only, skip `xtenancycheck` by default |
+| Same-tenancy copy | Reports stay in this tenancy without PAR | Prompt for local target bucket, deploy `copyusagereport`; `xtenancycheck` is not required |
+
+For manual prebuilt deployment, follow the same split: `xtenancycheck` belongs only with the bucket it protects, normally the primary destination bucket.
+
 ## Step 1: Create Function Application with VCN (Private Subnet)
 
 1. In OCI Console, go to **Networking** and create a **VCN** if you don't have one
@@ -142,6 +154,8 @@ If you enable cross-tenancy upload using `x-tenancy_par`:
 3. **Compartment / Bucket**: Select the bucket where files are uploaded
 4. **Action**: Functions → select your application and `xtenancycheck` function
 
+When using the scripted installer in the primary tenancy with a newly created PAR bucket, the installer can create this Object Create/Update rule for you after `xtenancycheck` is deployed.
+
 The event delivers object metadata (namespace, bucket, object name) to the function. Ensure the function's dynamic group has `manage objects` and `read objectstorage-namespace` on the bucket compartment.
 
 ---
@@ -261,6 +275,13 @@ For manual deployment, create a dynamic group that includes your function and gr
 ```hcl
 Allow dynamic-group <dynamic-group-name> to manage objects in compartment <compartment-name>
 Allow dynamic-group <dynamic-group-name> to read objectstorage-namespace in compartment <compartment-name>
+```
+
+**For copyusagereport source cost reports** (required to read Oracle-managed reports from `bling/<tenancy_ocid>`):
+
+```hcl
+define tenancy usage-report as ocid1.tenancy.oc1..aaaaaaaaned4fkpkisbwjlr56u7cj63lf3wffbilvqknstgtvzub7vhqkggq
+endorse dynamic-group <dynamic-group-name> to read objects in tenancy usage-report
 ```
 
 **For xtenancycheck** (to restrict to a specific bucket):

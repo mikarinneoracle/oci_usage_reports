@@ -235,6 +235,38 @@ detect_tenancy_ocid() {
   ' "$config"
 }
 
+delete_functions_application() {
+  local app_id="$1"
+  local app_name="$2"
+
+  if [[ -z "$app_id" || "$app_id" == "null" ]]; then
+    warn "Functions application OCID is empty; cannot delete existing application."
+    return 1
+  fi
+
+  local functions_json function_ids function_id
+  functions_json="$(run_oci fn function list --application-id "$app_id" --all --output json 2>/dev/null || true)"
+  function_ids="$(printf '%s' "$functions_json" | jq -r '.data[]?.id // empty' 2>/dev/null || true)"
+
+  while IFS= read -r function_id; do
+    [[ -z "$function_id" ]] && continue
+    info "Deleting function '${function_id}' from existing application '${app_name}'..."
+    if ! run_oci fn function delete --function-id "$function_id" --force >/dev/null 2>&1; then
+      warn "Failed to delete function '${function_id}'."
+      return 1
+    fi
+  done <<< "$function_ids"
+
+  info "Deleting existing Functions application '${app_name}'..."
+  if run_oci fn application delete --application-id "$app_id" --force >/dev/null 2>&1; then
+    info "Existing Functions application '${app_name}' deleted."
+    return 0
+  fi
+
+  warn "Failed to delete Functions application '${app_name}'."
+  return 1
+}
+
 list_identity_domain_names() {
   # List identity domain labels in the tenancy (root compartment) for a given home region. One per line.
   # Uses the same labels as Cloud UI (e.g. OracleIdentityCloudService, Default).
@@ -389,7 +421,15 @@ create_functions_application() {
         --raw-output 2>/dev/null || true
     )"
     if [[ -n "$existing_app" && "$existing_app" != "null" ]]; then
-      warn "Application '${app_name}' already exists in compartment '${compartment_name}'. Please choose a different application name."
+      warn "Application '${app_name}' already exists in compartment '${compartment_name}' (OCID: ${existing_app})."
+      if confirm "Delete the existing Functions application '${app_name}' and recreate it?" "n"; then
+        if delete_functions_application "$existing_app" "$app_name"; then
+          break
+        fi
+        warn "Existing application could not be deleted. Please choose a different application name."
+      else
+        warn "Keeping existing application '${app_name}'. Please choose a different application name."
+      fi
       continue
     fi
     break
@@ -838,7 +878,7 @@ ocir_login_cloud_shell() {
   info "OCIR login for Cloud Shell (using auth token)"
   
   # Ask if user wants to do OCIR login (default no); if N, expect user already logged in
-  if ! confirm "Do OCIR login? (y/N)" "n"; then
+  if ! confirm "Do OCIR login?" "n"; then
     info "Skipping OCIR login. Expecting podman/docker login to OCIR already set."
     return 0
   fi
@@ -997,7 +1037,7 @@ ocir_login_localhost() {
   local host
   host="$(get_ocir_host "$ocir_host" "$region_key")"
   # Ask before creating/using short-lived token (same as Cloud Shell path).
-  if ! confirm "Do OCIR login (using a short-lived token)? (y/N)" "n"; then
+  if ! confirm "Do OCIR login using a short-lived token?" "n"; then
     info "Skipping OCIR login. Expecting docker login to OCIR already set."
     return 0
   fi
@@ -1027,6 +1067,16 @@ prompt_default() {
     read -r -p "$prompt: " value || true
     echo "$value"
   fi
+}
+
+validate_bucket_par_url() {
+  local par_url="$1"
+  [[ "$par_url" =~ ^https://objectstorage\.[^/]+\.oraclecloud\.com/p/[^/]+/n/[^/]+/b/[^/]+/o/?$ ]]
+}
+
+bucket_from_par_url() {
+  local par_url="$1"
+  printf '%s' "$par_url" | sed -E 's#^https://objectstorage\.[^/]+\.oraclecloud\.com/p/[^/]+/n/[^/]+/b/([^/]+)/o/?$#\1#'
 }
 
 confirm() {
@@ -1088,63 +1138,10 @@ setup_dynamic_group_and_policies() {
     fi
   fi
 
-  # Select identity domain (similar to ocir_login_cloud_shell)
-  local domains_array domain_segment domain_segment_lower i n custom_opt domain_choice
-  domains_array=()
-  while IFS= read -r line; do
-    line="$(printf '%s' "$line" | tr -d '[:space:]')"
-    [[ -z "$line" ]] && continue
-    [[ "$line" == "[]" || "$line" == "null" ]] && continue
-    domains_array+=("$line")
-  done < <(list_identity_domain_names "${tenancy_ocid}" "${region_key}" 2>/dev/null || true)
-  
-  if [[ ${#domains_array[@]} -gt 0 ]]; then
-    info "Select identity domain for dynamic group matching rule:"
-    n=0
-    for i in "${domains_array[@]}"; do
-      [[ -z "$i" ]] && continue
-      n=$((n + 1))
-      echo "  ${n}) ${i}"
-    done
-    custom_opt=$((n + 1))
-    echo "  ${custom_opt}) Custom domain"
-    while true; do
-      domain_choice="$(prompt_default 'Enter choice' '1')"
-      if [[ "$domain_choice" == "$custom_opt" ]] || [[ "$domain_choice" == "custom" ]] || [[ "$domain_choice" == "Custom" ]]; then
-        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
-        break
-      fi
-      if [[ "$domain_choice" =~ ^[0-9]+$ ]] && [[ "$domain_choice" -ge 1 ]] && [[ "$domain_choice" -le "$n" ]]; then
-        domain_segment="${domains_array[$((domain_choice - 1))]}"
-        break
-      fi
-      warn "Invalid choice. Enter 1-${n} for a domain or ${custom_opt} for custom."
-    done
-  else
-    info "Select identity domain for dynamic group matching rule:"
-    echo "  1) oracleidentitycloudservice (default for IDCS-backed tenancies)"
-    echo "  2) Custom domain"
-    domain_choice="$(prompt_default 'Enter choice' '1')"
-    case "$domain_choice" in
-      1|"")
-        domain_segment="oracleidentitycloudservice"
-        ;;
-      2)
-        domain_segment="$(prompt_default 'Enter custom identity domain segment (e.g. mydomain)' 'oracleidentitycloudservice')"
-        ;;
-      *)
-        warn "Unknown choice '${domain_choice}', defaulting to 'oracleidentitycloudservice'."
-        domain_segment="oracleidentitycloudservice"
-        ;;
-    esac
-  fi
-  
-  domain_segment_lower="$(printf '%s' "$domain_segment" | tr '[:upper:]' '[:lower:]')"
-
   # Dynamic group name from .env
   local dyn_group_name="${DYN_GROUP_NAME:-oci-usage-reports-dyn-group}"
   
-  # Create dynamic group matching rule: match functions in the app compartment with the selected domain
+  # Create dynamic group matching rule: match functions in the app compartment.
   local matching_rule
   matching_rule="ALL {resource.type = 'fnfunc', resource.compartment.id = '${app_compartment_id}'}"
   
@@ -1155,6 +1152,23 @@ setup_dynamic_group_and_policies() {
   
   if [[ -n "$dyn_group_id" && "$dyn_group_id" != "null" ]]; then
     info "Dynamic group '${dyn_group_name}' already exists (OCID: ${dyn_group_id})."
+    local existing_matching_rule
+    existing_matching_rule="$(run_oci iam dynamic-group get \
+      --dynamic-group-id "$dyn_group_id" \
+      --query 'data."matching-rule"' \
+      --raw-output 2>/dev/null || true)"
+    if [[ "$existing_matching_rule" != "$matching_rule" ]]; then
+      warn "Dynamic group '${dyn_group_name}' matching rule differs from the current Functions compartment."
+      info "Updating dynamic group matching rule to: ${matching_rule}"
+      if run_oci iam dynamic-group update \
+        --dynamic-group-id "$dyn_group_id" \
+        --matching-rule "$matching_rule" \
+        --force >/dev/null 2>&1; then
+        info "Dynamic group '${dyn_group_name}' matching rule updated."
+      else
+        warn "Failed to update dynamic group '${dyn_group_name}'. The function may not receive the IAM policies."
+      fi
+    fi
   else
     # Try to create it
     info "Creating dynamic group '${dyn_group_name}'..."
@@ -1256,9 +1270,76 @@ setup_dynamic_group_and_policies() {
       else
         warn "Failed to create policy '${policy_name}'. It may already exist or check permissions."
       fi
+	  fi
+  fi
+
+  # Cost reports are stored in an Oracle-owned Object Storage tenancy, exposed
+  # through namespace "bling" with the customer tenancy OCID as the bucket name.
+  # Access requires an endorsement to Oracle's usage-report tenancy.
+  local source_policy_name="oci-usage-reports-source-policy"
+  local usage_report_tenancy_ocid="ocid1.tenancy.oc1..aaaaaaaaned4fkpkisbwjlr56u7cj63lf3wffbilvqknstgtvzub7vhqkggq"
+  local source_policy_statements=(
+    "define tenancy usage-report as ${usage_report_tenancy_ocid}"
+    "endorse dynamic-group ${dyn_group_name} to read objects in tenancy usage-report"
+  )
+  local source_policy_id
+  info "Checking for source usage-report IAM policy '${source_policy_name}' in root compartment..."
+  source_policy_id="$(run_oci iam policy list --compartment-id "$tenancy_ocid" --name "$source_policy_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+
+  local source_statements_json="["
+  local source_first=true
+  for stmt in "${source_policy_statements[@]}"; do
+    if [[ "$source_first" == "true" ]]; then
+      source_first=false
+    else
+      source_statements_json+=","
+    fi
+    source_statements_json+="\"${stmt}\""
+  done
+  source_statements_json+="]"
+
+  if [[ -n "$source_policy_id" && "$source_policy_id" != "null" ]]; then
+    info "Source usage-report policy '${source_policy_name}' already exists (OCID: ${source_policy_id})."
+    info "Updating source usage-report policy '${source_policy_name}' statements..."
+    local source_update_output
+    source_update_output="$(run_oci iam policy update \
+      --policy-id "$source_policy_id" \
+      --statements "$source_statements_json" \
+      --version-date "$(date +%Y-%m-%d)" \
+      --force 2>&1)" || true
+    if echo "$source_update_output" | jq -e '.data.id // empty' >/dev/null 2>&1; then
+      info "Source usage-report policy '${source_policy_name}' updated."
+    else
+      [[ -n "$source_update_output" ]] && echo "$source_update_output" >&2
+      warn "Failed to update source usage-report policy '${source_policy_name}'. Update it manually with the usage-report tenancy endorsement if copyusagereport cannot list /n/bling/b/${tenancy_ocid}/o."
+    fi
+  else
+    info "Creating source usage-report policy '${source_policy_name}'..."
+    local source_policy_output
+    source_policy_output="$(run_oci iam policy create \
+      --compartment-id "$tenancy_ocid" \
+      --name "$source_policy_name" \
+      --description "IAM policy for OCI Usage Reports source bucket access" \
+      --statements "$source_statements_json" \
+      --output json 2>/dev/null || true)"
+
+    if [[ -n "$source_policy_output" ]]; then
+      source_policy_id="$(echo "$source_policy_output" | jq -r '.data.id // empty' 2>/dev/null || true)"
+      if [[ -n "$source_policy_id" && "$source_policy_id" != "null" ]]; then
+        info "Source usage-report policy '${source_policy_name}' created (OCID: ${source_policy_id})."
+      else
+        source_policy_id="$(run_oci iam policy list --compartment-id "$tenancy_ocid" --name "$source_policy_name" --query 'data[0].id' --raw-output 2>/dev/null || true)"
+        if [[ -n "$source_policy_id" && "$source_policy_id" != "null" ]]; then
+          info "Source usage-report policy '${source_policy_name}' already exists (OCID: ${source_policy_id})."
+        else
+          warn "Failed to create source usage-report policy '${source_policy_name}'. Create it manually with the usage-report tenancy endorsement if copyusagereport cannot list /n/bling/b/${tenancy_ocid}/o."
+        fi
+      fi
+    else
+      warn "Failed to create source usage-report policy '${source_policy_name}'. Create it manually with the usage-report tenancy endorsement if copyusagereport cannot list /n/bling/b/${tenancy_ocid}/o."
     fi
   fi
-  
+
   # Show summary
   echo
   info "Dynamic group and policies setup summary:"
@@ -1269,11 +1350,94 @@ setup_dynamic_group_and_policies() {
   for stmt in "${policy_statements[@]}"; do
     info "      - ${stmt}"
   done
+  info "  Source Policy: ${source_policy_name} in root compartment"
+  info "    Statements:"
+  for stmt in "${source_policy_statements[@]}"; do
+    info "      - ${stmt}"
+  done
   echo
+
+  info "Waiting 60 seconds for IAM policy propagation before any function test..."
+  sleep 60
+}
+
+create_xtenancycheck_event_rule() {
+  local compartment_id="$1"
+  local bucket_name="$2"
+  local function_id="$3"
+
+  if [[ -z "$compartment_id" || "$compartment_id" == "null" ]]; then
+    warn "Could not determine bucket compartment; skipping event rule creation."
+    return 0
+  fi
+  if [[ -z "$bucket_name" ]]; then
+    warn "Bucket name is empty; skipping event rule creation."
+    return 0
+  fi
+  if [[ -z "$function_id" || "$function_id" == "null" ]]; then
+    warn "xtenancycheck function OCID is empty; skipping event rule creation."
+    return 0
+  fi
+
+  local rule_name condition_json actions_file existing_rule rule_id
+  rule_name="copyusagereport-${bucket_name}-xtenancycheck"
+
+  existing_rule="$(run_oci events rule list \
+    --compartment-id "$compartment_id" \
+    --display-name "$rule_name" \
+    --query 'data[0].id' \
+    --raw-output 2>/dev/null || true)"
+  if [[ -n "$existing_rule" && "$existing_rule" != "null" ]]; then
+    info "Event rule '${rule_name}' already exists (OCID: ${existing_rule}); skipping creation."
+    return 0
+  fi
+
+  actions_file="$(mktemp)"
+
+  condition_json="$(jq -nc --arg bucket "$bucket_name" '{
+    eventType: [
+      "com.oraclecloud.objectstorage.createobject",
+      "com.oraclecloud.objectstorage.updateobject"
+    ],
+    data: {
+      additionalDetails: {
+        bucketName: [$bucket]
+      }
+    }
+  }')"
+
+  jq -n --arg function_id "$function_id" '{
+    actions: [
+      {
+        actionType: "FAAS",
+        isEnabled: true,
+        functionId: $function_id
+      }
+    ]
+  }' > "$actions_file"
+
+  info "Creating Object Storage event rule '${rule_name}' for bucket '${bucket_name}' -> xtenancycheck..."
+  rule_id="$(run_oci events rule create \
+    --compartment-id "$compartment_id" \
+    --display-name "$rule_name" \
+    --description "Invoke xtenancycheck when objects are created or updated in bucket ${bucket_name}" \
+    --is-enabled true \
+    --condition "$condition_json" \
+    --actions "file://${actions_file}" \
+    --query 'data.id' \
+    --raw-output 2>/dev/null || true)"
+
+  rm -f "$actions_file"
+
+  if [[ -n "$rule_id" && "$rule_id" != "null" ]]; then
+    info "Event rule created (OCID: ${rule_id})."
+  else
+    warn "Failed to create event rule '${rule_name}'. Create it manually in OCI Events: Object Create/Update on bucket '${bucket_name}' -> xtenancycheck."
+  fi
 }
 
 install_prebuilt_with_fn() {
-  local region_key namespace repo_name app_name bucket_name secret par_url tenancy_ocid days arch arch_tag
+  local region_key namespace repo_name app_name bucket_name secret par_url tenancy_ocid days arch arch_tag install_scenario
   par_url=""
   local default_region default_namespace
   default_region="$(detect_default_region || true)"
@@ -1285,6 +1449,33 @@ install_prebuilt_with_fn() {
   else
     CONTAINER_CMD=docker
   fi
+
+  info "Select installation scenario:"
+  echo "  1) Primary tenancy: host the destination bucket/PAR and deploy xtenancycheck"
+  echo "  2) Secondary tenancy: send reports to an existing PAR; deploy copyusagereport only"
+  echo "  3) Same-tenancy copy: copy reports into a local bucket without PAR"
+  while true; do
+    local scenario_choice
+    scenario_choice="$(prompt_default 'Enter choice (1/2/3)' "${INSTALL_SCENARIO:-1}")"
+    case "$(printf '%s' "$scenario_choice" | tr '[:upper:]' '[:lower:]')" in
+      1|primary)
+        install_scenario="primary"
+        break
+        ;;
+      2|secondary)
+        install_scenario="secondary"
+        break
+        ;;
+      3|same|same-tenancy|local)
+        install_scenario="same-tenancy"
+        break
+        ;;
+      *)
+        warn "Invalid scenario. Enter 1 for primary, 2 for secondary, or 3 for same-tenancy."
+        ;;
+    esac
+  done
+  info "Selected scenario: ${install_scenario}"
 
   # Detect region key first (needed for default OCIR host if OCIR not set in .env)
   if [[ -z "${default_region:-}" ]]; then
@@ -1490,27 +1681,42 @@ install_prebuilt_with_fn() {
   fi
 
 
-  # Secret and PAR: no secret → prompt target bucket only. With secret → show PAR options first; option 1 prompts bucket for PAR, sets bucket_name, and we ensure bucket exists; option 2 uses existing PAR, bucket_name from .env default, skip bucket creation.
-  secret="$(prompt_default 'Enter secret (leave empty to skip xtenancycheck deployment and just to use a local bucket for the reports)' "")"
-  secret="$(printf '%s' "$secret" | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  local skip_bucket_ensure=false par_use_existing=false
-  if [[ -z "$secret" ]]; then
+  # Secret and PAR are driven by the selected scenario:
+  # - primary: create a destination bucket PAR and deploy xtenancycheck
+  # - secondary: use an existing PAR and deploy copyusagereport only
+  # - same-tenancy: copy into a local bucket without PAR
+  if [[ "$install_scenario" == "same-tenancy" ]]; then
+    secret=""
+    info "Same-tenancy copy: skipping secret and PAR configuration."
+  else
+    secret="$(prompt_default 'Enter secret for filename prefix and xtenancycheck' "")"
+    secret="$(printf '%s' "$secret" | tr -d '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [[ -z "$secret" ]]; then
+      error "Secret is required for ${install_scenario} scenario."
+    fi
+  fi
+  local skip_bucket_ensure=false par_use_existing=false par_created=false par_bucket_created_or_selected=false par_bucket_compartment_id="" par_bucket_name=""
+  if [[ -z "$secret" || "$install_scenario" == "same-tenancy" ]]; then
     bucket_name="$(prompt_default 'Enter target bucket name for copyusagereport' "${BUCKET_NAME:-copyusagereport}")"
     [[ -z "$bucket_name" ]] && bucket_name="copyusagereport"
   fi
-  if [[ -n "$secret" ]]; then
+  if [[ -n "$secret" && "$install_scenario" != "same-tenancy" ]]; then
     echo
-    info "PAR for cross-tenancy upload (copyusagereport will use this to write to the other tenancy's bucket):"
-    echo "  1) Create a new PAR with bucket for cross-tenancy upload and add it to copyusagereport config"
-    echo "  2) Use existing PAR (enter URL) and add it to copyusagereport config"
     local par_choice par_days ns_par par_expiry par_name access_uri par_bucket par_use_existing
     par_use_existing=false
-    par_choice="$(prompt_default 'Enter choice (1/2)' '1')"
+    if [[ "$install_scenario" == "secondary" ]]; then
+      info "Secondary tenancy: using an existing bucket-level PAR from the primary tenancy."
+      par_choice="2"
+    else
+      info "Primary tenancy: creating a destination bucket and bucket-level PAR for secondary tenancies."
+      par_choice="1"
+    fi
     case "$(printf '%s' "$par_choice" | tr '[:upper:]' '[:lower:]')" in
       1)
         par_bucket="$(prompt_default 'Enter bucket name for PAR' "${BUCKET_NAME:-copyusagereport}")"
         [[ -z "$par_bucket" ]] && par_bucket="copyusagereport"
         bucket_name="$par_bucket"
+        par_bucket_name="$par_bucket"
         par_days="$(prompt_default 'Enter PAR validity in days' "${PAR_TTL_DAYS:-365}")"
         par_days="$((par_days + 0))"
         [[ "$par_days" -lt 1 ]] && par_days=365
@@ -1526,6 +1732,7 @@ install_prebuilt_with_fn() {
         elif [[ -z "$app_compartment_id" || "$app_compartment_id" == "null" ]]; then
           warn "Could not get Functions app compartment; skipping bucket check. Ensure bucket '${par_bucket}' exists before creating PAR."
         else
+          par_bucket_compartment_id="$app_compartment_id"
           # Check if bucket exists, create if not
           if ! run_oci os bucket get --namespace-name "$ns_par" --name "$par_bucket" >/dev/null 2>&1; then
             info "Creating Object Storage bucket '${par_bucket}' in namespace '${ns_par}' (compartment of the Functions application)..."
@@ -1537,9 +1744,11 @@ install_prebuilt_with_fn() {
               warn "Could not create bucket '${par_bucket}'. Ensure it exists before creating PAR."
             else
               info "Bucket '${par_bucket}' created."
+              par_bucket_created_or_selected=true
             fi
           else
             info "Bucket '${par_bucket}' already exists in namespace '${ns_par}'."
+            par_bucket_created_or_selected=true
           fi
           
           # Create PAR after ensuring bucket exists
@@ -1558,6 +1767,7 @@ install_prebuilt_with_fn() {
           )"
           if [[ -n "$access_uri" && "$access_uri" != "null" ]]; then
             par_url="https://objectstorage.${region_key}.oraclecloud.com${access_uri}"
+            par_created=true
             info "PAR created for bucket '${par_bucket}' (namespace '${ns_par}'). Expires: ${par_expiry}"
             echo "PAR URL (share with the other tenancy): ${par_url}"
           else
@@ -1567,12 +1777,22 @@ install_prebuilt_with_fn() {
         ;;
       2)
         par_use_existing=true
-        par_url="$(prompt_default 'Enter existing PAR URL for cross-tenancy upload' "")"
-        if [[ -z "$par_url" ]]; then
-          warn "No PAR URL entered."
-        fi
-        bucket_name="${BUCKET_NAME:-copyusagereport}"
-        [[ -z "$bucket_name" ]] && bucket_name="copyusagereport"
+        while true; do
+          par_url="$(prompt_default 'Enter existing bucket-level PAR URL for cross-tenancy upload' "")"
+          par_url="$(printf '%s' "$par_url" | tr -d '\n\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if [[ -z "$par_url" ]]; then
+            warn "No PAR URL entered. Enter a bucket-level PAR URL, or press Ctrl-C to stop."
+            continue
+          fi
+          if validate_bucket_par_url "$par_url"; then
+            break
+          fi
+          warn "PAR URL does not look like a bucket-level Object Storage PAR."
+          warn "Expected format: https://objectstorage.<region>.oraclecloud.com/p/<token>/n/<namespace>/b/<bucket>/o/"
+          warn "Do not use the source usage-report URL under /n/bling/b/<tenancy_ocid>/o/."
+        done
+        bucket_name="$(bucket_from_par_url "$par_url")"
+        info "Using PAR target bucket '${bucket_name}' from the PAR URL for copyusagereport config."
         skip_bucket_ensure=true
         ;;
     esac
@@ -1653,7 +1873,7 @@ install_prebuilt_with_fn() {
       warn "Could not resolve compartment or namespace; skipping bucket check. Ensure bucket '${bucket_name}' exists or copyusagereport will fail with BucketNotFound."
     fi
   else
-    info "Using existing PAR; skipping bucket creation. Ensure bucket '${bucket_name}' exists in this tenancy for copyusagereport."
+    info "Using existing PAR; skipping local bucket creation. PAR target bucket from config: '${bucket_name}'."
   fi
 
   # Build config for copyusagereport function (includes PAR if set earlier).
@@ -1687,30 +1907,39 @@ install_prebuilt_with_fn() {
   fi
   info "copyusagereport function created (OCID: ${FN_COPY_ID})."
 
-  if [[ -n "$secret" ]]; then
-    if confirm "Deploy xtenancycheck with prebuilt image (requires same secret)?"; then
-      # Build config for xtenancycheck function
-      local xt_cfg
-      xt_cfg="{\"secret\":\"${secret}\"}"
+  if [[ -n "$secret" && "$install_scenario" == "primary" ]]; then
+    info "Primary tenancy: deploying xtenancycheck with the same secret."
+    # Build config for xtenancycheck function
+    local xt_cfg
+    xt_cfg="{\"secret\":\"${secret}\"}"
 
-      info "Creating xtenancycheck function with prebuilt image (${arch_tag}) via OCI CLI"
-      FN_XTEN_ID="$(
-        run_oci fn function create \
-          --application-id "$FN_APP_ID" \
-          --display-name xtenancycheck \
-          --image "${registry}/oci-xtenancy-check:${arch_tag}" \
-          --memory-in-mbs 256 \
-          --config "$xt_cfg" \
-          --query 'data.id' \
-          --raw-output 2>/dev/null || true
-      )"
-      if [[ -z "$FN_XTEN_ID" || "$FN_XTEN_ID" == "null" ]]; then
-        error "Failed to create xtenancycheck function."
-      fi
-      info "xtenancycheck function created (OCID: ${FN_XTEN_ID})."
-    else
-      warn "Skipping xtenancycheck deployment."
+    info "Creating xtenancycheck function with prebuilt image (${arch_tag}) via OCI CLI"
+    FN_XTEN_ID="$(
+      run_oci fn function create \
+        --application-id "$FN_APP_ID" \
+        --display-name xtenancycheck \
+        --image "${registry}/oci-xtenancy-check:${arch_tag}" \
+        --memory-in-mbs 256 \
+        --config "$xt_cfg" \
+        --query 'data.id' \
+        --raw-output 2>/dev/null || true
+    )"
+    if [[ -z "$FN_XTEN_ID" || "$FN_XTEN_ID" == "null" ]]; then
+      error "Failed to create xtenancycheck function."
     fi
+    info "xtenancycheck function created (OCID: ${FN_XTEN_ID})."
+
+    if [[ "$par_created" == "true" && "$par_bucket_created_or_selected" == "true" && -n "$par_bucket_name" && "$par_use_existing" != "true" ]]; then
+      if confirm "Create Event rule for bucket '${par_bucket_name}' to invoke xtenancycheck on object create/update?" "y"; then
+        create_xtenancycheck_event_rule "$par_bucket_compartment_id" "$par_bucket_name" "$FN_XTEN_ID"
+      else
+        warn "Skipping Event rule creation. Create an Object Storage create/update rule for bucket '${par_bucket_name}' manually if xtenancycheck should protect it."
+      fi
+    fi
+  elif [[ "$install_scenario" == "secondary" ]]; then
+    info "Secondary tenancy: skipping xtenancycheck deployment; the primary tenancy protects the destination bucket."
+  elif [[ "$install_scenario" == "same-tenancy" ]]; then
+    info "Same-tenancy copy: skipping xtenancycheck deployment."
   else
     warn "Secret is empty; xtenancycheck will not be deployed or validated."
   fi
@@ -1720,28 +1949,23 @@ install_prebuilt_with_fn() {
 
   # Optional post-deploy test
   if confirm "Run a quick test of the deployed functions now?" "y"; then
-    local test_choice
-    if [[ -n "$FN_XTEN_ID" && "$FN_XTEN_ID" != "null" ]]; then
-      info "Select which functions to test:"
-      echo "  1) copyusagereport only"
-      echo "  2) xtenancycheck only"
-      echo "  3) both"
-      test_choice="$(prompt_default 'Enter choice' '3')"
-    else
-      info "xtenancycheck was not deployed (no secret or deployment skipped); only copyusagereport can be tested."
-      test_choice="1"
-    fi
-
     local test_copy="no" test_xten="no"
-    case "$test_choice" in
-      1) test_copy="yes" ;;
-      2) test_xten="yes" ;;
-      3) test_copy="yes"; test_xten="yes" ;;
-      *) test_copy="yes" ;; # default to copyusagereport
-    esac
+    if [[ "$install_scenario" == "primary" && -n "$FN_XTEN_ID" && "$FN_XTEN_ID" != "null" ]]; then
+      info "Primary tenancy: testing copyusagereport and xtenancycheck."
+      test_copy="yes"
+      test_xten="yes"
+    else
+      info "Testing copyusagereport only for scenario '${install_scenario}'."
+      test_copy="yes"
+    fi
 
     if [[ "$test_copy" == "yes" && -n "$FN_COPY_ID" && "$FN_COPY_ID" != "null" ]]; then
       info "Invoking copyusagereport via OCI CLI for a quick smoke test..."
+      info "You can rerun this test manually with:"
+      echo "  oci fn function invoke --function-id '${FN_COPY_ID}' --body '{}' --file /tmp/copyusagereport-response.json"
+      echo "  cat /tmp/copyusagereport-response.json"
+      echo "  # or with Fn CLI:"
+      echo "  fn invoke '${app_name}' copyusagereport"
       local invoke_out
       invoke_out="$(mktemp)"
       if run_oci fn function invoke \
